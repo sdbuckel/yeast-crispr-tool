@@ -16,12 +16,21 @@ CODON_TABLE = {
     '*': ['TAA', 'TAG', 'TGA'],
 }
 
-# --- Styling ---
+# --- CSS Styling (Clean Highlights) ---
 st.markdown("""
     <style>
-    .dna-seq { font-family: 'Courier New', monospace; font-size: 1.2em; line-height: 1.6; word-break: break-all; background: #f9f9f9; padding: 15px; border-radius: 8px; }
-    .pam { background-color: #d1ffbd; color: #006400; padding: 2px 4px; border-radius: 3px; font-weight: bold; border-bottom: 2px solid #006400; }
-    .mut { background-color: #ffcccc; color: #cc0000; padding: 2px 4px; border-radius: 3px; font-weight: bold; border-bottom: 2px solid #cc0000; }
+    .dna-seq { 
+        font-family: 'Courier New', monospace; 
+        font-size: 1.2em; 
+        line-height: 1.8; 
+        word-break: break-all; 
+        background: #ffffff; 
+        padding: 15px; 
+        border: 1px solid #eee;
+        border-radius: 8px; 
+    }
+    .pam-site { background-color: #d1ffbd; color: #006400; padding: 0px 2px; border-radius: 2px; }
+    .mut-site { background-color: #ffcccc; color: #cc0000; padding: 0px 2px; border-radius: 2px; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -38,8 +47,7 @@ def get_gene_sequence(ensembl_id):
 
 def find_cas9_sites(gene_sequence, aa_pos):
     nuc_pos = (aa_pos - 1) * 3
-    window = 105
-    start, end = max(0, nuc_pos - 50), min(len(gene_sequence), nuc_pos + 50)
+    start, end = max(0, nuc_pos - 60), min(len(gene_sequence), nuc_pos + 60)
     region = gene_sequence[start:end]
     sites = []
     for m in re.finditer(r'(?=([ACGT]{20}[ACGT]GG))', region):
@@ -48,54 +56,71 @@ def find_cas9_sites(gene_sequence, aa_pos):
         sites.append({'pos': start + m.start(), 'seq': m.group(1), 'strand': 'reverse'})
     return sorted(sites, key=lambda x: abs(x['pos'] - nuc_pos))
 
-# --- UI Setup ---
-st.title("🧬 Yeast AutoOligo Helper")
+# --- Main Interface ---
+st.title("🧬 Yeast AutoOligo Designer")
 
 with st.sidebar:
-    gene_input = st.text_input("Gene", "PHO13")
+    st.header("Parameters")
+    gene_input = st.text_input("Gene", "PHO13").strip()
     residue = st.number_input("Residue #", value=123, min_value=1)
-    mutation_aa = st.text_input("Mutation", "R").upper()
-    run = st.button("Generate Designs", type="primary")
+    mutation_aa = st.text_input("Mutation", "R").upper().strip()
+    st.divider()
+    st.markdown("**Legend:**")
+    st.markdown('<span style="background:#ffcccc; color:#cc0000; padding:2px 5px; border-radius:3px">Mutation Site</span>', unsafe_allow_html=True)
+    st.markdown('<span style="background:#d1ffbd; color:#006400; padding:2px 5px; border-radius:3px">PAM Site</span>', unsafe_allow_html=True)
+    run = st.button("Generate Designs", type="primary", use_container_width=True)
 
 if run:
     gene_id = resolve_gene_name(gene_input)
-    if not gene_id: st.error("Gene not found.")
+    if not gene_id:
+        st.error(f"Gene '{gene_input}' not found.")
     else:
         full_seq = get_gene_sequence(gene_id)
         sites = find_cas9_sites(full_seq, residue)
         
-        for i, site in enumerate(sites[:3]):
-            with st.expander(f"Design {i+1} (Strand: {site['strand']})"):
-                # 1. Oligo Design
-                guide_20 = site['seq'][:-3] if site['strand'] == 'forward' else str(Seq(site['seq'][3:]).reverse_complement())
-                oligo_a = f"gatc{guide_20}gttttagagctag"
-                oligo_b = f"ctagctctaaaac{str(Seq(guide_20).reverse_complement())}"
-                
-                # 2. Repair Template Generation
-                mut_idx = (residue - 1) * 3
-                h_start, h_end = max(0, mut_idx - 40), min(len(full_seq), mut_idx + 43)
-                repair_base = full_seq[h_start:h_end]
-                
-                # 3. Visual Highlighting Logic
-                pam_start = site['pos'] - h_start
-                mut_pos = mut_idx - h_start
-                
-                # Build HTML string for display
-                html_output = '<div class="dna-seq">'
-                for idx, char in enumerate(repair_base):
-                    if idx in range(mut_pos, mut_pos+3):
-                        html_output += f'<span class="mut">{char}</span>'
-                    elif idx in range(pam_start + (20 if site['strand']=='forward' else 0), pam_start + (23 if site['strand']=='forward' else 3)):
-                        html_output += f'<span class="pam">{char}</span>'
-                    else:
-                        html_output += char
-                html_output += '</div>'
-                
-                st.markdown("### 🔬 Sequence Verification")
-                st.markdown(html_output, unsafe_allow_html=True)
-                st.caption("Green = PAM | Red = Mutation Site")
-                
-                # 4. Master Copy Block (Everything combined)
-                st.markdown("### 📋 Copy All Sequences")
-                master_text = f"--- DESIGN {i+1} ---\nOligo A: {oligo_a}\nOligo B: {oligo_b}\nRepair Template: {repair_base}"
-                st.code(master_text, language="text")
+        if not sites:
+            st.warning("No CRISPR sites found nearby.")
+        else:
+            for i, site in enumerate(sites[:3]):
+                with st.expander(f"Design Option {i+1} ({site['strand'].capitalize()})"):
+                    
+                    # 1. Oligo Design
+                    guide_20 = site['seq'][:-3] if site['strand'] == 'forward' else str(Seq(site['seq'][3:]).reverse_complement())
+                    oligo_a = f"gatc{guide_20.lower()}gttttagagctag"
+                    oligo_b = f"ctagctctaaaac{str(Seq(guide_20).reverse_complement()).lower()}"
+                    
+                    # 2. Repair Template (Sense and Complement)
+                    mut_idx = (residue - 1) * 3
+                    h_start, h_end = max(0, mut_idx - 40), min(len(full_seq), mut_idx + 43)
+                    repair_sense = full_seq[h_start:h_end]
+                    # Generate the complementary strand (not reverse complement, just complement)
+                    repair_comp = str(Seq(repair_sense).complement())
+                    
+                    # Map positions for visual highlighting
+                    pam_rel = site['pos'] - h_start
+                    mut_rel = mut_idx - h_start
+                    pam_range = range(pam_rel + 20, pam_rel + 23) if site['strand'] == 'forward' else range(pam_rel, pam_rel + 3)
+
+                    # Build Visual HTML
+                    html_dna = '<div class="dna-seq">'
+                    for idx, char in enumerate(repair_sense):
+                        if idx in range(mut_rel, mut_rel + 3):
+                            html_dna += f'<span class="mut-site">{char}</span>'
+                        elif idx in range(pam_range.start, pam_range.stop):
+                            html_dna += f'<span class="pam-site">{char}</span>'
+                        else:
+                            html_dna += char
+                    html_dna += '</div>'
+                    
+                    st.markdown("### 🔬 Visual Map (Sense Strand)")
+                    st.markdown(html_dna, unsafe_allow_html=True)
+                    
+                    st.markdown("### 📋 Combined Sequences")
+                    master_text = (
+                        f"--- DESIGN {i+1} ---\n"
+                        f"Oligo A: {oligo_a}\n"
+                        f"Oligo B: {oligo_b}\n"
+                        f"Repair Template (Sense): {repair_sense}\n"
+                        f"Repair Template (Complement): {repair_comp}"
+                    )
+                    st.code(master_text, language="text")
