@@ -62,7 +62,7 @@ if run:
     gene_id = resolve_gene_name(gene_input)
     if gene_id:
         full_seq = get_gene_sequence_with_flanks(gene_id)
-        offset = 50 # 5' UTR length
+        offset = 50
         mut_idx = offset + (residue - 1) * 3
         cds_end = len(full_seq) - 50
         
@@ -82,32 +82,27 @@ if run:
                         loc = " (5' UTR)" if site['pos'] < offset else (" (3' UTR)" if site['pos'] > cds_end else "")
                         st.subheader(f"Option {i+1}: PAM Site{loc}")
 
-                        # --- CRITICAL FIX: FRAME-AWARE VISUALIZATION ---
+                        # Frame-aware window
                         raw_start = max(0, min(mut_idx, site['pos']) - 12)
-                        # Ensure v_start relative to offset is always a multiple of 3
-                        dist_from_start = raw_start - offset
-                        v_start = offset + (dist_from_start // 3) * 3
-                        
+                        v_start = offset + ((raw_start - offset) // 3) * 3
                         v_end = min(len(full_seq), max(mut_idx + 3, site['pos'] + 23) + 15)
                         wt_dna = full_seq[v_start:v_end]
                         
-                        # Apply Primary Mutation
+                        # Apply Mutation (Keep track of changed indices)
                         rel_mut = mut_idx - v_start
                         mut_dna_list = list(wt_dna)
                         mut_dna_list[rel_mut:rel_mut+3] = list(CODON_TABLE[mutation_aa][0])
                         mut_dna_step1 = "".join(mut_dna_list)
+                        changed_indices = list(range(rel_mut, rel_mut+3))
                         
-                        # Silent PAM Disruption
+                        # PAM Disruption
                         pam_rel = site['pos'] - v_start
                         crit = range(pam_rel+21, pam_rel+23) if site['strand']=='forward' else range(pam_rel, pam_rel+2)
                         is_broken = any(mut_dna_step1[p] != wt_dna[p] for p in crit)
                         
-                        mut_dna_final, sil_idx = mut_dna_step1, []
-                        if is_broken:
-                            st.markdown('<div class="success-badge">✨ PAM Disrupted</div>', unsafe_allow_html=True)
-                        else:
+                        mut_dna_final = mut_dna_step1
+                        if not is_broken:
                             for p in crit:
-                                # Codon must align with v_start frame
                                 c_start = (p // 3) * 3
                                 if c_start < 0 or c_start + 3 > len(mut_dna_step1): continue
                                 o_cod = mut_dna_step1[c_start:c_start+3]
@@ -117,26 +112,30 @@ if run:
                                         if syn != o_cod and syn[p % 3] != o_cod[p % 3]:
                                             tmp = list(mut_dna_step1)
                                             tmp[c_start:c_start+3] = list(syn)
-                                            mut_dna_final, sil_idx, is_broken = "".join(tmp), [p], True
-                                            break
+                                            mut_dna_final = "".join(tmp)
+                                            changed_indices.extend(range(c_start, c_start+3))
+                                            is_broken = True; break
                                 if is_broken: break
 
-                        # Oligo Calculation
+                        # Lower-case changed bases
+                        display_mut_dna = ""
+                        for idx, char in enumerate(mut_dna_final):
+                            display_mut_dna += char.lower() if idx in changed_indices and mut_dna_final[idx] != wt_dna[idx] else char.upper()
+
+                        # Formatting oligos
                         g20 = site['seq'][:-3].upper() if site['strand']=='forward' else str(Seq(site['seq'][3:]).reverse_complement()).upper()
                         ol_a = f"GATC{g20}GTTTTAGAGCTAG"
                         ol_b = f"CTAGCTCTAAAAC{str(Seq(g20).reverse_complement()).upper()}"
                         
-                        # Proofreader Table with Frame Checking
+                        # Table Prep
                         aa_wt, aa_mu = [], []
                         for j in range(0, len(wt_dna), 3):
                             global_pos = v_start + j
-                            if global_pos >= offset and global_pos + 3 <= cds_end:
-                                aa_wt.append(str(Seq(wt_dna[j:j+3]).translate()))
-                                aa_mu.append(str(Seq(mut_dna_final[j:j+3]).translate()))
-                            else:
-                                aa_wt.append("UTR")
-                                aa_mu.append("UTR")
+                            in_cds = global_pos >= offset and global_pos + 3 <= cds_end
+                            aa_wt.append(str(Seq(wt_dna[j:j+3]).translate()) if in_cds else "---")
+                            aa_mu.append(str(Seq(mut_dna_final[j:j+3]).translate()) if in_cds else "---")
                         
+                        # Visual Table
                         html = '<table class="align-table"><tr><td class="label-cell">WT PROTEIN</td>'
                         for a in aa_wt: html += f'<td colspan="3">{a}</td>'
                         html += '</tr><tr><td class="label-cell">WT DNA</td>'
@@ -145,18 +144,30 @@ if run:
                             cls = ' class="pam-site"' if idx in f_pam else ''
                             html += f'<td{cls}>{char}</td>'
                         html += '</tr><tr><td class="label-cell">MUT DNA</td>'
-                        for idx, char in enumerate(mut_dna_final):
-                            cls = ' class="mut-site"' if idx in range(rel_mut, rel_mut+3) else (' class="silent-site"' if idx in sil_idx else '')
+                        for idx, char in enumerate(display_mut_dna):
+                            cls = ' class="mut-site"' if idx in range(rel_mut, rel_mut+3) else (' class="silent-site"' if idx in changed_indices else '')
                             html += f'<td{cls}>{char}</td>'
                         html += '</tr><tr><td class="label-cell">MUT PROTEIN</td>'
                         for a in aa_mu: html += f'<td colspan="3" style="font-weight:bold;">{a}</td>'
                         html += '</tr></table>'
                         st.markdown(html, unsafe_allow_html=True)
 
-                        # Word Export Block
-                        word_text = f"OPTION {i+1} - {site['strand'].upper()} STRAND\n" + "="*40 + "\n"
-                        word_text += f"Oligo A (Top):    {ol_a}\nOligo B (Bottom): {ol_b}\n\n"
-                        word_text += f"Repair (Sense):   {mut_dna_final}\nRepair (Comp):    {str(Seq(mut_dna_final).complement())}\n\n"
-                        word_text += f"WT DNA Segment:  {wt_dna}\nMUT DNA Segment: {mut_dna_final}"
+                        # Copy-Friendly Alignment
+                        copy_wt_aa = "   ".join([a.center(3) for a in aa_wt])
+                        copy_mu_aa = "   ".join([a.center(3) for a in aa_mu])
+                        
+                        word_text = f"--- OPTION {i+1} LAB DATA ---\n"
+                        word_text += f"Oligo A (Top):    {ol_a}\n"
+                        word_text += f"Oligo B (Bottom): {ol_b}\n\n"
+                        word_text += f"Repair Template (Sense): {display_mut_dna}\n"
+                        word_text += f"Repair Template (Comp):  {str(Seq(mut_dna_final).complement()).upper()}\n\n"
+                        word_text += "PROOFREADING ALIGNMENT:\n"
+                        word_text += f"WT AA:  {copy_wt_aa}\n"
+                        word_text += f"WT DNA: {wt_dna.upper()}\n"
+                        word_text += f"MUT DNA:{display_mut_dna}\n"
+                        word_text += f"MUT AA: {copy_mu_aa}\n"
+                        
                         st.code(word_text, language="text")
                         st.markdown('</div>', unsafe_allow_html=True)
+    else:
+        st.error(f"Gene {gene_input} not found.")
