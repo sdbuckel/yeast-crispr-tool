@@ -23,10 +23,12 @@ st.markdown("""
     .pam-site { background-color: #d1ffbd; color: #006400; font-weight: bold; }
     .mut-site { background-color: #ffcccc; color: #cc0000; font-weight: bold; }
     .silent-site { background-color: #fff9c4; color: #827717; font-weight: bold; }
+    .warning-badge { background-color: #ff4b4b; color: white; padding: 5px 10px; border-radius: 5px; font-weight: bold; display: inline-block; margin-bottom: 10px; }
     .design-card { border: 1px solid #ddd; padding: 25px; border-radius: 12px; margin-bottom: 35px; background-color: white; box-shadow: 3px 3px 10px rgba(0,0,0,0.05); }
     </style>
     """, unsafe_allow_html=True)
 
+# --- Helper Functions ---
 def resolve_gene_name(gene):
     url = f"https://rest.ensembl.org/xrefs/symbol/saccharomyces_cerevisiae/{gene}?content-type=application/json"
     r = requests.get(url)
@@ -37,110 +39,112 @@ def get_gene_sequence(ensembl_id):
     r = requests.get(url)
     return r.text.strip() if r.status_code == 200 else None
 
-def find_cas9_sites(gene_sequence, aa_pos):
+def find_unique_cas9_sites(gene_sequence, aa_pos):
     nuc_pos = (aa_pos - 1) * 3
-    window = 60
+    window = 100 
     start, end = max(0, nuc_pos - window), min(len(gene_sequence), nuc_pos + window)
     region = gene_sequence[start:end]
     sites = []
+    # Forward NGG
     for m in re.finditer(r'(?=([ACGT]{20}[ACGT]GG))', region):
         sites.append({'pos': start + m.start(), 'seq': m.group(1), 'strand': 'forward'})
+    # Reverse CCN
     for m in re.finditer(r'(?=(CC[ACGT][ACGT]{20}))', region):
         sites.append({'pos': start + m.start(), 'seq': m.group(1), 'strand': 'reverse'})
+    # Return sorted by proximity to target mutation, unique by position
     return sorted(sites, key=lambda x: abs(x['pos'] - nuc_pos))
 
-def get_all_silent_disruptions(sequence, critical_indices):
-    results = []
+def attempt_silent_disruption(sequence, critical_indices):
+    seq_list = list(sequence)
+    # Check both G's (or C's) in the PAM
     for p_idx in critical_indices:
         codon_start = (p_idx // 3) * 3
-        orig_codon = sequence[codon_start:codon_start+3]
+        orig_codon = "".join(seq_list[codon_start:codon_start+3])
         current_aa = next((aa for aa, codons in CODON_TABLE.items() if orig_codon in codons), None)
         if current_aa:
             for syn in CODON_TABLE[current_aa]:
                 if syn != orig_codon:
                     pos_in_codon = p_idx % 3
                     if syn[pos_in_codon] != orig_codon[pos_in_codon]:
-                        new_seq = list(sequence)
-                        new_seq[codon_start:codon_start+3] = list(syn)
-                        results.append(("".join(new_seq), [p_idx]))
-    return results[:5]
+                        seq_list[codon_start:codon_start+3] = list(syn)
+                        return "".join(seq_list), [p_idx], True
+    return "".join(seq_list), [], False
 
 # --- UI ---
-st.title("🧬 Yeast CRISPR Designer")
+st.title("🧬 Yeast CRISPR Multi-Site Designer")
 with st.sidebar:
     gene_input = st.text_input("Gene", "PHO13").strip()
     residue = st.number_input("Residue #", value=123, min_value=1)
     mutation_aa = st.text_input("Mutation", "R").upper().strip()
-    run = st.button("Generate Designs", type="primary")
+    run = st.button("Generate Independent Designs", type="primary")
 
 if run:
     gene_id = resolve_gene_name(gene_input)
     if gene_id:
         full_seq = get_gene_sequence(gene_id)
         mut_idx_gene = (residue - 1) * 3
-        sites = find_cas9_sites(full_seq, residue)
+        all_sites = find_unique_cas9_sites(full_seq, residue)
         
-        for i, site in enumerate(sites[:3]):
-            st.header(f"📍 Guide RNA Site {i+1} ({site['strand'].upper()})")
-            
-            start_idx = (max(0, min(mut_idx_gene, site['pos']) - 12) // 3) * 3
-            end_idx = min(len(full_seq), max(mut_idx_gene + 3, site['pos'] + 23) + 15)
-            wt_dna = full_seq[start_idx:end_idx]
-            rel_mut = mut_idx_gene - start_idx
-            
-            mut_dna_list = list(wt_dna)
-            mut_dna_list[rel_mut:rel_mut+3] = list(CODON_TABLE.get(mutation_aa, ["???"])[0])
-            base_mut_dna = "".join(mut_dna_list)
-            
-            pam_rel = site['pos'] - start_idx
-            # Critical bases: GG for forward, CC for reverse
-            crit_idx = range(pam_rel+21, pam_rel+23) if site['strand']=='forward' else range(pam_rel, pam_rel+2)
-            variants = get_all_silent_disruptions(base_mut_dna, crit_idx)
-            
-            # Oligo Generation
-            guide_20 = site['seq'][:-3] if site['strand'] == 'forward' else str(Seq(site['seq'][3:]).reverse_complement())
-            ol_a = f"GATC{guide_20.upper()}GTTTTAGAGCTAG"
-            ol_b = f"CTAGCTCTAAAAC{str(Seq(guide_20).reverse_complement()).upper()}"
+        # Take the top 5 UNIQUE PAM locations
+        for i, site in enumerate(all_sites[:5]):
+            with st.container():
+                st.markdown(f'<div class="design-card">', unsafe_allow_html=True)
+                st.subheader(f"Option {i+1}: Independent PAM Site ({site['strand'].upper()})")
+                st.info(f"Targeting PAM sequence **{site['seq'][-3:] if site['strand']=='forward' else site['seq'][:3]}** at genome index {site['pos']}.")
 
-            for v_idx, (mut_dna_final, silent_idx) in enumerate(variants):
-                with st.container():
-                    st.markdown(f'<div class="design-card">', unsafe_allow_html=True)
-                    st.subheader(f"Variation {v_idx+1}")
-                    
-                    aa_line_vals = [str(Seq(wt_dna[j:j+3]).translate()) for j in range(0, len(wt_dna), 3)]
-                    ma_line_vals = [str(Seq(mut_dna_final[j:j+3]).translate()) for j in range(0, len(mut_dna_final), 3)]
-                    
-                    html = '<table class="align-table"><tr><td class="label-cell">WT PROTEIN</td>'
-                    for aa in aa_line_vals: html += f'<td colspan="3" style="color:#888">{aa}</td>'
-                    html += '</tr><tr><td class="label-cell">WT DNA</td>'
-                    full_p = range(pam_rel+20, pam_rel+23) if site['strand']=='forward' else range(pam_rel, pam_rel+3)
-                    for idx, char in enumerate(wt_dna):
-                        cls = ' class="pam-site"' if idx in full_p else ''
-                        html += f'<td{cls}>{char}</td>'
-                    html += '</tr><tr><td class="label-cell">MUT DNA</td>'
-                    for idx, char in enumerate(mut_dna_final):
-                        cls = ' class="mut-site"' if idx in range(rel_mut, rel_mut+3) else (' class="silent-site"' if idx in silent_idx else '')
-                        html += f'<td{cls}>{char}</td>'
-                    html += '</tr><tr><td class="label-cell">MUT PROTEIN</td>'
-                    for aa in ma_line_vals: html += f'<td colspan="3" style="font-weight:bold;">{aa}</td>'
-                    html += '</tr></table>'
-                    st.markdown(html, unsafe_allow_html=True)
+                # Setup base fragment and primary mutation
+                start_idx = (max(0, min(mut_idx_gene, site['pos']) - 12) // 3) * 3
+                end_idx = min(len(full_seq), max(mut_idx_gene + 3, site['pos'] + 23) + 15)
+                wt_dna = full_seq[start_idx:end_idx]
+                rel_mut = mut_idx_gene - start_idx
+                
+                mut_dna_list = list(wt_dna)
+                mut_dna_list[rel_mut:rel_mut+3] = list(CODON_TABLE.get(mutation_aa, ["???"])[0])
+                base_mut_dna = "".join(mut_dna_list)
+                
+                # PAM Disruption (Only GG or CC)
+                pam_rel = site['pos'] - start_idx
+                crit_idx = range(pam_rel+21, pam_rel+23) if site['strand']=='forward' else range(pam_rel, pam_rel+2)
+                mut_dna_final, silent_idx, success = attempt_silent_disruption(base_mut_dna, crit_idx)
+                
+                if not success:
+                    st.markdown('<div class="warning-badge">⚠️ PAM LOCKED: Choose another option if possible</div>', unsafe_allow_html=True)
+                
+                # Oligo Design for this specific PAM
+                guide_20 = site['seq'][:-3] if site['strand'] == 'forward' else str(Seq(site['seq'][3:]).reverse_complement())
+                ol_a = f"GATC{guide_20.upper()}GTTTTAGAGCTAG"
+                ol_b = f"CTAGCTCTAAAAC{str(Seq(guide_20).reverse_complement()).upper()}"
 
-                    # Safe Word Export string construction
-                    comp_seq = str(Seq(mut_dna_final).complement())
-                    aa_str = "  ".join(aa_line_vals)
-                    ma_str = "  ".join(ma_line_vals)
-                    
-                    word_text = f"SITE {i+1} VARIATION {v_idx+1}\n"
-                    word_text += "="*30 + "\n"
-                    word_text += f"Oligo A: {ol_a}\n"
-                    word_text += f"Oligo B: {ol_b}\n\n"
-                    word_text += f"Repair Sense: {mut_dna_final}\n"
-                    word_text += f"Repair Comp:  {comp_seq}\n\n"
-                    word_text += f"WT PROTEIN: {aa_str}\n"
-                    word_text += f"WT DNA:     {wt_dna}\n"
-                    word_text += f"MUT DNA:    {mut_dna_final}\n"
-                    word_text += f"MUT PROTEIN: {ma_str}"
-                    
-                    st.code(word_text, language="text")
-                    st.markdown('</div>', unsafe_allow_html=True)
+                # Proofreader Table
+                aa_line = [str(Seq(wt_dna[j:j+3]).translate()) for j in range(0, len(wt_dna), 3)]
+                ma_line = [str(Seq(mut_dna_final[j:j+3]).translate()) for j in range(0, len(mut_dna_final), 3)]
+                
+                html = '<table class="align-table"><tr><td class="label-cell">WT PROTEIN</td>'
+                for aa in aa_line: html += f'<td colspan="3" style="color:#888">{aa}</td>'
+                html += '</tr><tr><td class="label-cell">WT DNA</td>'
+                full_pam_range = range(pam_rel+20, pam_rel+23) if site['strand']=='forward' else range(pam_rel, pam_rel+3)
+                for idx, char in enumerate(wt_dna):
+                    cls = ' class="pam-site"' if idx in full_pam_range else ''
+                    html += f'<td{cls}>{char}</td>'
+                html += '</tr><tr><td class="label-cell">MUT DNA</td>'
+                for idx, char in enumerate(mut_dna_final):
+                    cls = ' class="mut-site"' if idx in range(rel_mut, rel_mut+3) else (' class="silent-site"' if idx in silent_idx else '')
+                    html += f'<td{cls}>{char}</td>'
+                html += '</tr><tr><td class="label-cell">MUT PROTEIN</td>'
+                for aa in ma_line: html += f'<td colspan="3" style="font-weight:bold;">{aa}</td>'
+                html += '</tr></table>'
+                st.markdown(html, unsafe_allow_html=True)
+
+                # Word Export
+                comp_seq = str(Seq(mut_dna_final).complement())
+                word_text = f"OPTION {i+1} - INDEPENDENT PAM SITE\n"
+                word_text += "="*40 + "\n"
+                word_text += f"Oligo A: {ol_a}\n"
+                word_text += f"Oligo B: {ol_b}\n\n"
+                word_text += f"Repair Sense: {mut_dna_final}\n"
+                word_text += f"Repair Comp:  {comp_seq}\n\n"
+                word_text += f"WT DNA:  {wt_dna}\n"
+                word_text += f"MUT DNA: {mut_dna_final}"
+                
+                st.code(word_text, language="text")
+                st.markdown('</div>', unsafe_allow_html=True)
