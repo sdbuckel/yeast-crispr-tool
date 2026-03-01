@@ -23,12 +23,11 @@ st.markdown("""
     .pam-site { background-color: #d1ffbd; color: #006400; font-weight: bold; }
     .mut-site { background-color: #ffcccc; color: #cc0000; font-weight: bold; }
     .silent-site { background-color: #fff9c4; color: #827717; font-weight: bold; }
-    .warning-badge { background-color: #ff4b4b; color: white; padding: 5px 10px; border-radius: 5px; font-weight: bold; display: inline-block; margin-bottom: 10px; }
     .design-card { border: 1px solid #ddd; padding: 25px; border-radius: 12px; margin-bottom: 35px; background-color: white; box-shadow: 3px 3px 10px rgba(0,0,0,0.05); }
     </style>
     """, unsafe_allow_html=True)
 
-# [Functions resolve_gene_name, get_gene_sequence, find_cas9_sites remain same]
+# [Helper functions resolve_gene_name, get_gene_sequence, find_cas9_sites remain same]
 def resolve_gene_name(gene):
     url = f"https://rest.ensembl.org/xrefs/symbol/saccharomyces_cerevisiae/{gene}?content-type=application/json"
     r = requests.get(url)
@@ -52,13 +51,11 @@ def find_cas9_sites(gene_sequence, aa_pos):
     return sorted(sites, key=lambda x: abs(x['pos'] - nuc_pos))
 
 def get_all_silent_disruptions(sequence, critical_indices):
-    """Finds multiple ways to silently break the GG or CC motif."""
     results = []
     for p_idx in critical_indices:
         codon_start = (p_idx // 3) * 3
         orig_codon = sequence[codon_start:codon_start+3]
         current_aa = next((aa for aa, codons in CODON_TABLE.items() if orig_codon in codons), None)
-        
         if current_aa:
             for syn in CODON_TABLE[current_aa]:
                 if syn != orig_codon:
@@ -67,10 +64,10 @@ def get_all_silent_disruptions(sequence, critical_indices):
                         new_seq = list(sequence)
                         new_seq[codon_start:codon_start+3] = list(syn)
                         results.append(("".join(new_seq), [p_idx]))
-    return results[:5] # Limit to 5 variations
+    return results[:5]
 
 # --- UI ---
-st.title("🧬 Multi-Variant Yeast CRISPR Designer")
+st.title("🧬 Multi-Variant CRISPR Designer")
 with st.sidebar:
     gene_input = st.text_input("Gene", "PHO13").strip()
     residue = st.number_input("Residue #", value=123, min_value=1)
@@ -84,7 +81,7 @@ if run:
         mut_idx_gene = (residue - 1) * 3
         sites = find_cas9_sites(full_seq, residue)
         
-        for i, site in enumerate(sites[:3]): # Search top 3 sgRNA sites
+        for i, site in enumerate(sites[:3]):
             st.header(f"📍 Guide RNA Site {i+1} ({site['strand'].upper()})")
             
             # Setup base fragment and mutation
@@ -102,36 +99,44 @@ if run:
             
             variants = get_all_silent_disruptions(base_mut_dna, critical_indices)
             
-            if not variants:
-                st.markdown('<div class="warning-badge">⚠️ ALL PAM VARIANTS LOCKED: No silent GG/CC disruption possible here.</div>', unsafe_allow_html=True)
-            
+            # 1. Calculate Full Oligo A and B for this site
+            guide_20 = site['seq'][:-3] if site['strand'] == 'forward' else str(Seq(site['seq'][3:]).reverse_complement())
+            oligo_a = f"GATC{guide_20.upper()}GTTTTAGAGCTAG"
+            oligo_b = f"CTAGCTCTAAAAC{str(Seq(guide_20).reverse_complement()).upper()}"
+
             for v_idx, (mut_dna_final, silent_idx) in enumerate(variants):
                 with st.container():
                     st.markdown(f'<div class="design-card">', unsafe_allow_html=True)
-                    st.subheader(f"Variation {v_idx+1} for Site {i+1}")
+                    st.subheader(f"Variation {v_idx+1} (Silent PAM Change)")
                     
-                    # Formatting Table and Copy Block... (Keeping same logic as before)
-                    aa_line = [str(Seq(wt_dna[j:j+3]).translate()) for j in range(0, len(wt_dna), 3)]
-                    ma_line = [str(Seq(mut_dna_final[j:j+3]).translate()) for j in range(0, len(mut_dna_final), 3)]
+                    # Proofreader Table
+                    aa_line_vals = [str(Seq(wt_dna[j:j+3]).translate()) for j in range(0, len(wt_dna), 3)]
+                    ma_line_vals = [str(Seq(mut_dna_final[j:j+3]).translate()) for j in range(0, len(mut_dna_final), 3)]
                     
                     html = '<table class="align-table"><tr><td class="label-cell">WT PROTEIN</td>'
-                    for aa in aa_line: html += f'<td colspan="3" style="color:#888">{aa}</td>'
+                    for aa in aa_line_vals: html += f'<td colspan="3" style="color:#888">{aa}</td>'
                     html += '</tr><tr><td class="label-cell">WT DNA</td>'
-                    full_pam = range(pam_rel+20, pam_rel+23) if site['strand']=='forward' else range(pam_rel, pam_rel+3)
+                    full_pam_range = range(pam_rel+20, pam_rel+23) if site['strand']=='forward' else range(pam_rel, pam_rel+3)
                     for idx, char in enumerate(wt_dna):
-                        cls = ' class="pam-site"' if idx in full_pam else ''
+                        cls = ' class="pam-site"' if idx in full_pam_range else ''
                         html += f'<td{cls}>{char}</td>'
                     html += '</tr><tr><td class="label-cell">MUT DNA</td>'
                     for idx, char in enumerate(mut_dna_final):
                         cls = ' class="mut-site"' if idx in range(rel_mut, rel_mut+3) else (' class="silent-site"' if idx in silent_idx else '')
                         html += f'<td{cls}>{char}</td>'
                     html += '</tr><tr><td class="label-cell">MUT PROTEIN</td>'
-                    for aa in ma_line: html += f'<td colspan="3" style="font-weight:bold;">{aa}</td>'
+                    for aa in ma_line_vals: html += f'<td colspan="3" style="font-weight:bold;">{aa}</td>'
                     html += '</tr></table>'
                     st.markdown(html, unsafe_allow_html=True)
-                    
-                    # Word Export Block
-                    guide_20 = site['seq'][:-3] if site['strand'] == 'forward' else str(Seq(site['seq'][3:]).reverse_complement())
-                    word_text = f"SITE {i+1} VAR {v_idx+1}\nOligo A: gatc{guide_20.lower()}gttttagagctag\nRepair Sense: {mut_dna_final}\nRepair Comp:  {str(Seq(mut_dna_final).complement())}"
-                    st.code(word_text, language="text")
-                    st.markdown('</div>', unsafe_allow_html=True)
+
+                    # --- Word Export Block (RESTORED OLIGO B) ---
+                    st.markdown("### 📋 Copy for Microsoft Word")
+                    word_text = (
+                        f"SITE {i+1} VARIATION {v_idx+1}\n"
+                        f"{'='*30}\n"
+                        f"CLONING OLIGOS (pML104):\n"
+                        f"Oligo A (Top):    {oligo_a}\n"
+                        f"Oligo B (Bottom): {oligo_b}\n\n"
+                        f"REPAIR TEMPLATE:\n"
+                        f"Sense:      {mut_dna_final}\n"
+                        f"Complement: {str(Seq(mut_dna_final).complement
