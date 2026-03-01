@@ -23,7 +23,6 @@ st.markdown("""
     .pam-site { background-color: #d1ffbd; color: #006400; font-weight: bold; }
     .mut-site { background-color: #ffcccc; color: #cc0000; font-weight: bold; }
     .silent-site { background-color: #fff9c4; color: #827717; font-weight: bold; }
-    .success-badge { background-color: #28a745; color: white; padding: 5px 10px; border-radius: 5px; font-weight: bold; display: inline-block; margin-bottom: 10px; }
     .design-card { border: 1px solid #ddd; padding: 25px; border-radius: 12px; margin-bottom: 35px; background-color: white; box-shadow: 3px 3px 10px rgba(0,0,0,0.05); }
     </style>
     """, unsafe_allow_html=True)
@@ -69,46 +68,43 @@ if run:
         if mut_idx + 3 > cds_end:
             st.error(f"Residue {residue} is out of bounds.")
         elif mutation_aa not in CODON_TABLE:
-            st.error(f"'{mutation_aa}' is an invalid amino acid.")
+            st.error(f"'{mutation_aa}' is invalid.")
         else:
             wt_aa = str(Seq(full_seq[mut_idx:mut_idx+3]).translate())
             if mutation_aa == wt_aa:
-                st.error(f"**Entry Error:** Position {residue} is already {wt_aa}.")
+                st.error(f"Position {residue} is already {wt_aa}.")
             else:
                 sites = find_unique_cas9_sites(full_seq, mut_idx)
                 for i, site in enumerate(sites[:5]):
                     with st.container():
                         st.markdown('<div class="design-card">', unsafe_allow_html=True)
-                        loc = " (5' UTR)" if site['pos'] < offset else (" (3' UTR)" if site['pos'] > cds_end else "")
-                        st.subheader(f"Option {i+1}: PAM Site{loc}")
+                        st.subheader(f"Option {i+1}: {'Forward' if site['strand']=='forward' else 'Reverse'} Site")
 
                         # Frame-aware window
                         raw_start = max(0, min(mut_idx, site['pos']) - 12)
                         v_start = offset + ((raw_start - offset) // 3) * 3
                         v_end = min(len(full_seq), max(mut_idx + 3, site['pos'] + 23) + 15)
-                        wt_dna = full_seq[v_start:v_end]
+                        wt_dna_seg = full_seq[v_start:v_end]
                         
-                        # Apply Mutation (Keep track of changed indices)
                         rel_mut = mut_idx - v_start
-                        mut_dna_list = list(wt_dna)
+                        mut_dna_list = list(wt_dna_seg)
                         mut_dna_list[rel_mut:rel_mut+3] = list(CODON_TABLE[mutation_aa][0])
                         mut_dna_step1 = "".join(mut_dna_list)
-                        changed_indices = list(range(rel_mut, rel_mut+3))
                         
-                        # PAM Disruption
                         pam_rel = site['pos'] - v_start
                         crit = range(pam_rel+21, pam_rel+23) if site['strand']=='forward' else range(pam_rel, pam_rel+2)
-                        is_broken = any(mut_dna_step1[p] != wt_dna[p] for p in crit)
+                        is_broken = any(mut_dna_step1[p] != wt_dna_seg[p] for p in crit)
                         
                         mut_dna_final = mut_dna_step1
+                        changed_indices = list(range(rel_mut, rel_mut+3))
                         if not is_broken:
                             for p in crit:
                                 c_start = (p // 3) * 3
                                 if c_start < 0 or c_start + 3 > len(mut_dna_step1): continue
                                 o_cod = mut_dna_step1[c_start:c_start+3]
-                                aa = next((a for a, c in CODON_TABLE.items() if o_cod in c), None)
-                                if aa:
-                                    for syn in CODON_TABLE[aa]:
+                                aa_orig = next((a for a, c in CODON_TABLE.items() if o_cod in c), None)
+                                if aa_orig:
+                                    for syn in CODON_TABLE[aa_orig]:
                                         if syn != o_cod and syn[p % 3] != o_cod[p % 3]:
                                             tmp = list(mut_dna_step1)
                                             tmp[c_start:c_start+3] = list(syn)
@@ -117,57 +113,30 @@ if run:
                                             is_broken = True; break
                                 if is_broken: break
 
-                        # Lower-case changed bases
-                        display_mut_dna = ""
+                        final_display_dna = ""
                         for idx, char in enumerate(mut_dna_final):
-                            display_mut_dna += char.lower() if idx in changed_indices and mut_dna_final[idx] != wt_dna[idx] else char.upper()
+                            if idx in changed_indices and mut_dna_final[idx] != wt_dna_seg[idx]:
+                                final_display_dna += char.lower()
+                            else:
+                                final_display_dna += char.upper()
 
-                        # Formatting oligos
-                        g20 = site['seq'][:-3].upper() if site['strand']=='forward' else str(Seq(site['seq'][3:]).reverse_complement()).upper()
-                        ol_a = f"GATC{g20}GTTTTAGAGCTAG"
-                        ol_b = f"CTAGCTCTAAAAC{str(Seq(g20).reverse_complement()).upper()}"
-                        
-                        # Table Prep
-                        aa_wt, aa_mu = [], []
-                        for j in range(0, len(wt_dna), 3):
-                            global_pos = v_start + j
-                            in_cds = global_pos >= offset and global_pos + 3 <= cds_end
-                            aa_wt.append(str(Seq(wt_dna[j:j+3]).translate()) if in_cds else "---")
-                            aa_mu.append(str(Seq(mut_dna_final[j:j+3]).translate()) if in_cds else "---")
-                        
-                        # Visual Table
-                        html = '<table class="align-table"><tr><td class="label-cell">WT PROTEIN</td>'
-                        for a in aa_wt: html += f'<td colspan="3">{a}</td>'
-                        html += '</tr><tr><td class="label-cell">WT DNA</td>'
-                        f_pam = range(pam_rel+20, pam_rel+23) if site['strand']=='forward' else range(pam_rel, pam_rel+3)
-                        for idx, char in enumerate(wt_dna):
-                            cls = ' class="pam-site"' if idx in f_pam else ''
-                            html += f'<td{cls}>{char}</td>'
-                        html += '</tr><tr><td class="label-cell">MUT DNA</td>'
-                        for idx, char in enumerate(display_mut_dna):
-                            cls = ' class="mut-site"' if idx in range(rel_mut, rel_mut+3) else (' class="silent-site"' if idx in changed_indices else '')
-                            html += f'<td{cls}>{char}</td>'
-                        html += '</tr><tr><td class="label-cell">MUT PROTEIN</td>'
-                        for a in aa_mu: html += f'<td colspan="3" style="font-weight:bold;">{a}</td>'
-                        html += '</tr></table>'
-                        st.markdown(html, unsafe_allow_html=True)
+                        # Formatting the text alignment manually (1 char per DNA base)
+                        wt_aa_line = ""
+                        mu_aa_line = ""
+                        for j in range(0, len(wt_dna_seg), 3):
+                            gp = v_start + j
+                            in_cds = gp >= offset and gp + 3 <= cds_end
+                            
+                            # Place AA at first char of codon, then 2 spaces
+                            if in_cds:
+                                w_a = str(Seq(wt_dna_seg[j:j+3]).translate())
+                                m_a = str(Seq(mut_dna_final[j:j+3]).translate())
+                                wt_aa_line += w_a + "  "
+                                mu_aa_line += m_a + "  "
+                            else:
+                                wt_aa_line += "---"
+                                mu_aa_line += "---"
 
-                        # Copy-Friendly Alignment
-                        copy_wt_aa = "   ".join([a.center(3) for a in aa_wt])
-                        copy_mu_aa = "   ".join([a.center(3) for a in aa_mu])
-                        
-                        word_text = f"--- OPTION {i+1} LAB DATA ---\n"
-                        word_text += f"Oligo A (Top):    {ol_a}\n"
-                        word_text += f"Oligo B (Bottom): {ol_b}\n\n"
-                        word_text += f"Repair Template (Sense): {display_mut_dna}\n"
-                        word_text += f"Repair Template (Comp):  {str(Seq(mut_dna_final).complement()).upper()}\n\n"
-                        word_text += "PROOFREADING ALIGNMENT:\n"
-                        word_text += f"WT AA:  {copy_wt_aa}\n"
-                        word_text += f"WT DNA: {wt_dna.upper()}\n"
-                        word_text += f"MUT DNA:{display_mut_dna}\n"
-                        word_text += f"MUT AA: {copy_mu_aa}\n"
-                        
-                        st.code(word_text, language="text")
-                        st.markdown('</div>', unsafe_allow_html=True)
-    else:
-        st.error(f"Gene {gene_input} not found.")
+                        # Ensure DNA and AA lines are trimmed/padded equally
+                        wt_aa_line = wt_aa_line[:len(wt_dna_seg)]
+                        mu_aa_line = mu_aa_line[:len(wt
