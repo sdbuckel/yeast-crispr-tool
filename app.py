@@ -27,7 +27,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- Helper Functions ---
+# --- Logic Functions ---
 def resolve_gene_name(gene):
     url = f"https://rest.ensembl.org/xrefs/symbol/saccharomyces_cerevisiae/{gene}?content-type=application/json"
     r = requests.get(url)
@@ -88,16 +88,14 @@ if run:
                 st.markdown('<div class="design-card">', unsafe_allow_html=True)
                 st.subheader(f"Option {i+1} ({site['strand'].upper()} strand)")
                 
-                # 1. Oligo Design
                 guide_20 = site['seq'][:-3] if site['strand'] == 'forward' else str(Seq(site['seq'][3:]).reverse_complement())
-                oligo_a, oligo_b = f"gatc{guide_20.lower()}gttttagagctag", f"ctagctctaaaac{str(Seq(guide_20).reverse_complement()).lower()}"
+                oligo_a = f"gatc{guide_20.lower()}gttttagagctag"
+                oligo_b = f"ctagctctaaaac{str(Seq(guide_20).reverse_complement()).lower()}"
                 
-                # 2. Sequence Framing
                 start_idx = (max(0, min(mut_idx_gene, site['pos']) - 12) // 3) * 3
                 end_idx = min(len(full_seq), max(mut_idx_gene + 3, site['pos'] + 23) + 15)
                 wt_dna = full_seq[start_idx:end_idx]
                 
-                # 3. Apply Mutation & Silent PAM Disruption
                 mut_dna_list = list(wt_dna)
                 rel_mut = mut_idx_gene - start_idx
                 mut_dna_list[rel_mut:rel_mut+3] = list(CODON_TABLE.get(mutation_aa, ["???"])[0])
@@ -107,16 +105,48 @@ if run:
                 pam_indices = set(range(pam_rel+21, pam_rel+23)) if site['strand']=='forward' else set(range(pam_rel, pam_rel+2))
                 mut_dna_final, silent_idx = disrupt_pam_silently(mut_dna_step1, pam_indices)
                 
-                # 4. Grid Display
-                html = '<table class="align-table"><tr><td class="label-cell">WT PROTEIN</td>'
-                for j in range(0, len(wt_dna), 3): html += f'<td colspan="3" style="color:#888">{str(Seq(wt_dna[j:j+3]).translate())}</td>'
+                # HTML Proofreader
+                html = '<table class="align-table">'
+                html += '<tr><td class="label-cell">WT PROTEIN</td>'
+                for j in range(0, len(wt_dna), 3):
+                    aa = str(Seq(wt_dna[j:j+3]).translate())
+                    html += f'<td colspan="3" style="color:#888">{aa}</td>'
+                
                 html += '</tr><tr><td class="label-cell">WT DNA</td>'
                 for idx, char in enumerate(wt_dna):
                     cls = ' class="pam-site"' if idx in pam_indices else ''
                     html += f'<td{cls}>{char}</td>'
+                
                 html += '</tr><tr><td class="label-cell">MUT DNA</td>'
                 for idx, char in enumerate(mut_dna_final):
-                    cls = ' class="mut-site"' if idx in range(rel_mut, rel_mut+3) else (' class="silent-site"' if idx in silent_idx else '')
+                    cls = ""
+                    if idx in range(rel_mut, rel_mut+3): cls = ' class="mut-site"'
+                    elif idx in silent_idx: cls = ' class="silent-site"'
                     html += f'<td{cls}>{char}</td>'
+                
                 html += '</tr><tr><td class="label-cell">MUT PROTEIN</td>'
-                for j in range(0, len(mut_dna_final), 3): html += f'<td colspan="3" style="font-weight:bold;">{str(Seq(mut_dna_final
+                for j in range(0, len(mut_dna_final), 3):
+                    aa_mut = str(Seq(mut_dna_final[j:j+3]).translate())
+                    html += f'<td colspan="3" style="font-weight:bold;">{aa_mut}</td>'
+                html += '</tr></table>'
+                
+                st.markdown(html, unsafe_allow_html=True)
+
+                st.markdown("### 📋 Master Copy (Microsoft Word)")
+                aa_line = "WT AA:  " + "  ".join([str(Seq(wt_dna[j:j+3]).translate()) for j in range(0, len(wt_dna), 3)])
+                ma_line = "MUT AA: " + "  ".join([str(Seq(mut_dna_final[j:j+3]).translate()) for j in range(0, len(mut_dna_final), 3)])
+                
+                word_text = (
+                    f"DESIGN OPTION {i+1} ({site['strand'].upper()})\n"
+                    f"OLIGO A: {oligo_a}\n"
+                    f"OLIGO B: {oligo_b}\n"
+                    f"REPAIR SENSE: {mut_dna_final}\n"
+                    f"REPAIR COMP : {str(Seq(mut_dna_final).complement())}\n\n"
+                    f"ALIGNMENT (Use Courier New Font):\n"
+                    f"{aa_line}\n"
+                    f"WT DNA: {wt_dna}\n"
+                    f"MT DNA: {mut_dna_final}\n"
+                    f"{ma_line}"
+                )
+                st.code(word_text, language="text")
+                st.markdown('</div>', unsafe_allow_html=True)
