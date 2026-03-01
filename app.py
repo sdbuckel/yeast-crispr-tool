@@ -14,7 +14,7 @@ CODON_TABLE = {
     'V': ['GTT', 'GTC', 'GTA', 'GTG'], 'W': ['TGG'], 'Y': ['TAT', 'TAC'], '*': ['TAA', 'TAG', 'TGA']
 }
 
-# --- Styling ---
+# --- CSS Styling ---
 st.markdown("""
     <style>
     .align-table { font-family: 'Courier New', monospace; border-collapse: collapse; margin: 10px 0; background-color: #ffffff; width: 100%; }
@@ -28,7 +28,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# [Helper functions resolve_gene_name, get_gene_sequence, find_cas9_sites remain the same]
+# [Helper functions resolve_gene_name, get_gene_sequence, find_cas9_sites remain same]
 def resolve_gene_name(gene):
     url = f"https://rest.ensembl.org/xrefs/symbol/saccharomyces_cerevisiae/{gene}?content-type=application/json"
     r = requests.get(url)
@@ -51,19 +51,17 @@ def find_cas9_sites(gene_sequence, aa_pos):
         sites.append({'pos': start + m.start(), 'seq': m.group(1), 'strand': 'reverse'})
     return sorted(sites, key=lambda x: abs(x['pos'] - nuc_pos))
 
-def attempt_silent_disruption(sequence, pam_indices):
-    """Aggressively tries to find any synonymous mutation that breaks the PAM."""
+def attempt_strict_pam_disruption(sequence, pam_critical_indices):
+    """Targets ONLY the GG or CC bases to break the PAM."""
     seq_list = list(sequence)
-    # Check all positions in the PAM (typically 3 bases)
-    for p_idx in pam_indices:
+    for p_idx in pam_critical_indices:
         codon_start = (p_idx // 3) * 3
-        orig_codon = sequence[codon_start:codon_start+3]
+        orig_codon = "".join(seq_list[codon_start:codon_start+3])
         current_aa = next((aa for aa, codons in CODON_TABLE.items() if orig_codon in codons), None)
         
         if current_aa:
             for syn in CODON_TABLE[current_aa]:
                 if syn != orig_codon:
-                    # Check if this specific synonymous codon changes the PAM base
                     pos_in_codon = p_idx % 3
                     if syn[pos_in_codon] != orig_codon[pos_in_codon]:
                         seq_list[codon_start:codon_start+3] = list(syn)
@@ -71,7 +69,7 @@ def attempt_silent_disruption(sequence, pam_indices):
     return "".join(seq_list), [], False
 
 # --- UI Layout ---
-st.title("🧬 Yeast AutoOligo: Anti-Recutting Designer")
+st.title("🧬 Yeast AutoOligo: Lab Edition")
 with st.sidebar:
     gene_input = st.text_input("Gene", "PHO13").strip()
     residue = st.number_input("Residue #", value=123, min_value=1)
@@ -90,45 +88,64 @@ if run:
                 st.markdown('<div class="design-card">', unsafe_allow_html=True)
                 st.subheader(f"Option {i+1} ({site['strand'].upper()} strand)")
                 
-                # Setup Sequences
+                # 1. Oligo Design
+                guide_20 = site['seq'][:-3] if site['strand'] == 'forward' else str(Seq(site['seq'][3:]).reverse_complement())
+                oligo_a = f"gatc{guide_20.lower()}gttttagagctag"
+                oligo_b = f"ctagctctaaaac{str(Seq(guide_20).reverse_complement()).lower()}"
+                
+                # 2. Base Sequences
                 start_idx = (max(0, min(mut_idx_gene, site['pos']) - 12) // 3) * 3
                 end_idx = min(len(full_seq), max(mut_idx_gene + 3, site['pos'] + 23) + 15)
                 wt_dna = full_seq[start_idx:end_idx]
                 
-                # Apply Primary Mutation
+                # 3. Apply Primary Mutation
                 rel_mut = mut_idx_gene - start_idx
                 mut_dna_list = list(wt_dna)
                 mut_dna_list[rel_mut:rel_mut+3] = list(CODON_TABLE.get(mutation_aa, ["???"])[0])
                 mut_dna_base = "".join(mut_dna_list)
                 
-                # Apply Silent PAM Disruption
+                # 4. Strict PAM Disruption (Only GG or CC)
                 pam_rel = site['pos'] - start_idx
-                pam_indices = range(pam_rel+20, pam_rel+23) if site['strand']=='forward' else range(pam_rel, pam_rel+3)
-                mut_dna_final, silent_idx, success = attempt_silent_disruption(mut_dna_base, pam_indices)
+                # Critical bases are the last two for forward (NGG) or first two for reverse (CCN)
+                critical_indices = range(pam_rel+21, pam_rel+23) if site['strand']=='forward' else range(pam_rel, pam_rel+2)
+                mut_dna_final, silent_idx, success = attempt_strict_pam_disruption(mut_dna_base, critical_indices)
                 
                 if not success:
-                    st.markdown('<div class="warning-badge">⚠️ PAM LOCKED: No silent mutation possible for this site</div>', unsafe_allow_html=True)
+                    st.markdown('<div class="warning-badge">⚠️ PAM LOCKED: No silent mutation possible for the GG/CC motif</div>', unsafe_allow_html=True)
 
-                # HTML Table Generation (keeping AA translation variables to avoid syntax errors)
+                # 5. Alignment Table
+                aa_line_vals = [str(Seq(wt_dna[j:j+3]).translate()) for j in range(0, len(wt_dna), 3)]
+                ma_line_vals = [str(Seq(mut_dna_final[j:j+3]).translate()) for j in range(0, len(mut_dna_final), 3)]
+                
                 html = '<table class="align-table"><tr><td class="label-cell">WT PROTEIN</td>'
-                for j in range(0, len(wt_dna), 3):
-                    html += f'<td colspan="3" style="color:#888">{str(Seq(wt_dna[j:j+3]).translate())}</td>'
+                for aa in aa_line_vals: html += f'<td colspan="3" style="color:#888">{aa}</td>'
                 html += '</tr><tr><td class="label-cell">WT DNA</td>'
+                full_pam_range = range(pam_rel+20, pam_rel+23) if site['strand']=='forward' else range(pam_rel, pam_rel+3)
                 for idx, char in enumerate(wt_dna):
-                    cls = ' class="pam-site"' if idx in pam_indices else ''
+                    cls = ' class="pam-site"' if idx in full_pam_range else ''
                     html += f'<td{cls}>{char}</td>'
                 html += '</tr><tr><td class="label-cell">MUT DNA</td>'
                 for idx, char in enumerate(mut_dna_final):
                     cls = ' class="mut-site"' if idx in range(rel_mut, rel_mut+3) else (' class="silent-site"' if idx in silent_idx else '')
                     html += f'<td{cls}>{char}</td>'
                 html += '</tr><tr><td class="label-cell">MUT PROTEIN</td>'
-                for j in range(0, len(mut_dna_final), 3):
-                    html += f'<td colspan="3" style="font-weight:bold;">{str(Seq(mut_dna_final[j:j+3]).translate())}</td>'
+                for aa in ma_line_vals: html += f'<td colspan="3" style="font-weight:bold;">{aa}</td>'
                 html += '</tr></table>'
                 st.markdown(html, unsafe_allow_html=True)
 
-                # Word Export
-                st.markdown("### 📋 Copy for Word")
-                word_text = f"DESIGN OPTION {i+1}\nOligo A: gatc... \nRepair: {mut_dna_final}\nComplement: {str(Seq(mut_dna_final).complement())}"
+                # 6. Word Export
+                st.markdown("### 📋 Copy for Microsoft Word")
+                word_text = (
+                    f"DESIGN OPTION {i+1} ({site['strand'].upper()})\n"
+                    f"OLIGO A: {oligo_a}\n"
+                    f"OLIGO B: {oligo_b}\n"
+                    f"REPAIR SENSE: {mut_dna_final}\n"
+                    f"REPAIR COMP : {str(Seq(mut_dna_final).complement())}\n\n"
+                    f"ALIGNMENT (Use Courier New Font):\n"
+                    f"WT AA:  " + "  ".join(aa_line_vals) + "\n"
+                    f"WT DNA: {wt_dna}\n"
+                    f"MT DNA: {mut_dna_final}\n"
+                    f"MT AA:  " + "  ".join(ma_line_vals)
+                )
                 st.code(word_text, language="text")
                 st.markdown('</div>', unsafe_allow_html=True)
