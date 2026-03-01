@@ -62,7 +62,7 @@ if run:
     gene_id = resolve_gene_name(gene_input)
     if gene_id:
         full_seq = get_gene_sequence_with_flanks(gene_id)
-        offset = 50
+        offset = 50 # 5' UTR length
         mut_idx = offset + (residue - 1) * 3
         cds_end = len(full_seq) - 50
         
@@ -82,8 +82,12 @@ if run:
                         loc = " (5' UTR)" if site['pos'] < offset else (" (3' UTR)" if site['pos'] > cds_end else "")
                         st.subheader(f"Option {i+1}: PAM Site{loc}")
 
-                        # Visualization Window
-                        v_start = (max(0, min(mut_idx, site['pos']) - 12) // 3) * 3
+                        # --- CRITICAL FIX: FRAME-AWARE VISUALIZATION ---
+                        raw_start = max(0, min(mut_idx, site['pos']) - 12)
+                        # Ensure v_start relative to offset is always a multiple of 3
+                        dist_from_start = raw_start - offset
+                        v_start = offset + (dist_from_start // 3) * 3
+                        
                         v_end = min(len(full_seq), max(mut_idx + 3, site['pos'] + 23) + 15)
                         wt_dna = full_seq[v_start:v_end]
                         
@@ -100,9 +104,10 @@ if run:
                         
                         mut_dna_final, sil_idx = mut_dna_step1, []
                         if is_broken:
-                            st.markdown('<div class="success-badge">✨ PAM Disrupted by Mutation</div>', unsafe_allow_html=True)
+                            st.markdown('<div class="success-badge">✨ PAM Disrupted</div>', unsafe_allow_html=True)
                         else:
                             for p in crit:
+                                # Codon must align with v_start frame
                                 c_start = (p // 3) * 3
                                 if c_start < 0 or c_start + 3 > len(mut_dna_step1): continue
                                 o_cod = mut_dna_step1[c_start:c_start+3]
@@ -118,11 +123,19 @@ if run:
 
                         # Oligo Calculation
                         g20 = site['seq'][:-3].upper() if site['strand']=='forward' else str(Seq(site['seq'][3:]).reverse_complement()).upper()
-                        ol_a, ol_b = f"GATC{g20}GTTTTAGAGCTAG", f"CTAGCTCTAAAAC{str(Seq(g20).reverse_complement()).upper()}"
+                        ol_a = f"GATC{g20}GTTTTAGAGCTAG"
+                        ol_b = f"CTAGCTCTAAAAC{str(Seq(g20).reverse_complement()).upper()}"
                         
-                        # Proofreader Table
-                        aa_wt = [str(Seq(wt_dna[j:j+3]).translate()) if (v_start+j >= offset and v_start+j+3 <= cds_end) else "UTR" for j in range(0, len(wt_dna), 3)]
-                        aa_mu = [str(Seq(mut_dna_final[j:j+3]).translate()) if (v_start+j >= offset and v_start+j+3 <= cds_end) else "UTR" for j in range(0, len(mut_dna_final), 3)]
+                        # Proofreader Table with Frame Checking
+                        aa_wt, aa_mu = [], []
+                        for j in range(0, len(wt_dna), 3):
+                            global_pos = v_start + j
+                            if global_pos >= offset and global_pos + 3 <= cds_end:
+                                aa_wt.append(str(Seq(wt_dna[j:j+3]).translate()))
+                                aa_mu.append(str(Seq(mut_dna_final[j:j+3]).translate()))
+                            else:
+                                aa_wt.append("UTR")
+                                aa_mu.append("UTR")
                         
                         html = '<table class="align-table"><tr><td class="label-cell">WT PROTEIN</td>'
                         for a in aa_wt: html += f'<td colspan="3">{a}</td>'
@@ -135,10 +148,12 @@ if run:
                         for idx, char in enumerate(mut_dna_final):
                             cls = ' class="mut-site"' if idx in range(rel_mut, rel_mut+3) else (' class="silent-site"' if idx in sil_idx else '')
                             html += f'<td{cls}>{char}</td>'
+                        html += '</tr><tr><td class="label-cell">MUT PROTEIN</td>'
+                        for a in aa_mu: html += f'<td colspan="3" style="font-weight:bold;">{a}</td>'
                         html += '</tr></table>'
                         st.markdown(html, unsafe_allow_html=True)
 
-                        # Restoration of the Word Export Block
+                        # Word Export Block
                         word_text = f"OPTION {i+1} - {site['strand'].upper()} STRAND\n" + "="*40 + "\n"
                         word_text += f"Oligo A (Top):    {ol_a}\nOligo B (Bottom): {ol_b}\n\n"
                         word_text += f"Repair (Sense):   {mut_dna_final}\nRepair (Comp):    {str(Seq(mut_dna_final).complement())}\n\n"
