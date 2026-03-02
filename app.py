@@ -11,24 +11,22 @@ st.markdown("<style>.citation-text{font-size:0.9em;color:#555;font-style:italic;
 
 def resolve_gene_name(gene):
     url = f"https://rest.ensembl.org/xrefs/symbol/saccharomyces_cerevisiae/{gene}?content-type=application/json"
-    r = requests.get(url)
-    return r.json()[0]['id'] if r.status_code == 200 and r.json() else None
+    r = requests.get(url); return r.json()[0]['id'] if r.status_code == 200 and r.json() else None
 
 def get_gene_seq(ensembl_id):
     url = f"https://rest.ensembl.org/sequence/id/{ensembl_id}?content-type=text/plain;expand_5prime=50;expand_3prime=50"
-    r = requests.get(url)
-    return r.text.strip() if r.status_code == 200 else None
+    r = requests.get(url); return r.text.strip() if r.status_code == 200 else None
 
 def find_sites(seq, m_pos):
-    win = 100
-    s, e = max(0, m_pos-win), min(len(seq), m_pos+win)
-    reg, results = seq[s:e], []
-    for m in re.finditer(r'(?=([ACGT]{20}[ACGT]GG))', reg): results.append({'pos':s+m.start(),'seq':m.group(1),'strand':'forward'})
-    for m in re.finditer(r'(?=(CC[ACGT][ACGT]{20}))', reg): results.append({'pos':s+m.start(),'seq':m.group(1),'strand':'reverse'})
-    return sorted(results, key=lambda x: abs(x['pos']-m_pos))
+    win = 100; s, e = max(0, m_pos-win), min(len(seq), m_pos+win)
+    reg, res_list = seq[s:e], []
+    for m in re.finditer(r'(?=([ACGT]{20}[ACGT]GG))', reg): res_list.append({'pos':s+m.start(),'seq':m.group(1),'strand':'forward'})
+    for m in re.finditer(r'(?=(CC[ACGT][ACGT]{20}))', reg): res_list.append({'pos':s+m.start(),'seq':m.group(1),'strand':'reverse'})
+    return sorted(res_list, key=lambda x: abs(x['pos']-m_pos))
 
 # --- UI Header ---
-st.title("🧬 Yeast CRISPR Lab Designer")
+st.title("🧬 Yeast CRISPR Oligo Designer")
+
 st.markdown('<div class="citation-text">This tool will assist you in making single point mutations in various yeast genes. The references include:<br>• Laughery et al (2015) <em>Yeast</em> volume 32 pages 711-720<br>• Laughery and Wryck (2019) <em>Current Protocols in Molecular Biology</em> Volume 129 pages e110.</div>', unsafe_allow_html=True)
 st.markdown('<div class="instruction-box"><strong>How to use:</strong> Enter the systematic or common yeast gene name. Add the <strong>amino acid number</strong> to change in the <em>Residue #</em> box and the <strong>new amino acid</strong> using 1-letter abbreviations.</div>', unsafe_allow_html=True)
 
@@ -47,7 +45,6 @@ if run:
         if m_idx+3 > c_end: st.error("Residue out of bounds.")
         elif m_aa not in CODON_TABLE: st.error("Invalid AA code.")
         else:
-            wt_aa = str(Seq(f_seq[m_idx:m_idx+3]).translate())
             sites = find_sites(f_seq, m_idx)
             for i, site in enumerate(sites[:5]):
                 with st.container():
@@ -56,37 +53,28 @@ if run:
                     v_s = off + (((max(0, min(m_idx, site['pos'])-12)) - off)//3)*3
                     v_e = min(len(f_seq), max(m_idx+3, site['pos']+23)+15)
                     wt_dna = f_seq[v_s:v_e]
-                    
-                    # Mutate & PAM break
                     r_mut = m_idx - v_s
-                    m_dna_l = list(wt_dna)
-                    m_dna_l[r_mut:r_mut+3] = list(CODON_TABLE[m_aa][0])
+                    m_dna_l = list(wt_dna); m_dna_l[r_mut:r_mut+3] = list(CODON_TABLE[m_aa][0])
                     p_rel = site['pos'] - v_s
                     crit = range(p_rel+21, p_rel+23) if site['strand']=='forward' else range(p_rel, p_rel+2)
-                    m_dna_s1 = "".join(m_dna_l)
-                    is_bk = any(m_dna_s1[p] != wt_dna[p] for p in crit)
+                    m_dna_s1 = "".join(m_dna_l); is_bk = any(m_dna_s1[p] != wt_dna[p] for p in crit)
                     m_dna_f, c_idx = m_dna_s1, list(range(r_mut, r_mut+3))
                     if not is_bk:
                         for p in crit:
                             cs = (p//3)*3
                             if 0 <= cs <= len(m_dna_s1)-3:
-                                oc = m_dna_s1[cs:cs+3]
-                                aa_o = next((a for a, c in CODON_TABLE.items() if oc in c), None)
+                                oc = m_dna_s1[cs:cs+3]; aa_o = next((a for a, c in CODON_TABLE.items() if oc in c), None)
                                 if aa_o:
                                     for syn in CODON_TABLE[aa_o]:
                                         if syn != oc and syn[p%3] != oc[p%3]:
-                                            tmp = list(m_dna_s1); tmp[cs:cs+3] = list(syn)
-                                            m_dna_f, is_bk = "".join(tmp), True
+                                            tmp = list(m_dna_s1); tmp[cs:cs+3] = list(syn); m_dna_f, is_bk = "".join(tmp), True
                                             c_idx.extend(range(cs, cs+3)); break
                             if is_bk: break
-                    
                     dis_dna = "".join([c.lower() if (idx in c_idx and c != wt_dna[idx]) else c.upper() for idx, c in enumerate(m_dna_f)])
-                    
-                    # DNA/Prot rows for table
                     aa_wt = [str(Seq(wt_dna[j:j+3]).translate()) if (v_s+j>=off and v_s+j+3<=c_end) else "---" for j in range(0, len(wt_dna), 3)]
                     aa_mu = [str(Seq(m_dna_f[j:j+3]).translate()) if (v_s+j>=off and v_s+j+3<=c_end) else "---" for j in range(0, len(m_dna_f), 3)]
                     
-                    # Visual Table
+                    # Visual HTML Table
                     h = '<table class="align-table"><tr><td class="label-cell">WT PROT</td>'
                     for a in aa_wt: h += f'<td colspan="3" style="color:#777">{a}</td>'
                     h += '</tr><tr><td class="label-cell">WT DNA</td>'
@@ -101,7 +89,7 @@ if run:
                     h += '</tr></table>'
                     st.markdown(h, unsafe_allow_html=True)
 
-                    # Text Output
+                    # Export Block
                     g20 = site['seq'][:-3].upper() if site['strand']=='forward' else str(Seq(site['seq'][3:]).reverse_complement()).upper()
                     wt_p_l = "".join([a + "  " for a in aa_wt])[:len(wt_dna)]
                     mu_p_l = "".join([a + "  " for a in aa_mu])[:len(wt_dna)]
