@@ -14,6 +14,20 @@ CODON_TABLE = {
     'V': ['GTT', 'GTC', 'GTA', 'GTG'], 'W': ['TGG'], 'Y': ['TAT', 'TAC'], '*': ['TAA', 'TAG', 'TGA']
 }
 
+# --- CSS Styling for the Visual Table ---
+st.markdown("""
+    <style>
+    .align-table { font-family: 'Courier New', monospace; border-collapse: collapse; margin: 20px 0; background-color: #ffffff; width: 100%; }
+    .align-table td { padding: 5px 2px; text-align: center; width: 24px; font-size: 1.1em; border: 1px solid #eee; }
+    .label-cell { text-align: right !important; width: 140px !important; color: #444; font-size: 0.9em !important; padding-right: 15px !important; border-right: 3px solid #ddd !important; font-weight: bold; background-color: #f9f9f9; }
+    .pam-site { background-color: #d1ffbd; color: #006400; font-weight: bold; }
+    .mut-site { background-color: #ffcccc; color: #cc0000; font-weight: bold; }
+    .silent-site { background-color: #fff9c4; color: #827717; font-weight: bold; }
+    .design-card { border: 1px solid #ddd; padding: 25px; border-radius: 12px; margin-bottom: 40px; background-color: white; box-shadow: 2px 2px 8px rgba(0,0,0,0.05); }
+    </style>
+    """, unsafe_allow_html=True)
+
+# --- Helper Functions ---
 def resolve_gene_name(gene):
     url = f"https://rest.ensembl.org/xrefs/symbol/saccharomyces_cerevisiae/{gene}?content-type=application/json"
     r = requests.get(url)
@@ -37,19 +51,16 @@ def find_unique_cas9_sites(gene_sequence, mut_pos_in_seq):
     return sorted(sites, key=lambda x: abs(x['pos'] - mut_pos_in_seq))
 
 def format_alignment(dna_seq, v_start, offset, cds_end):
-    """Creates a protein string where AA sits on the 1st base of each codon."""
     aa_str = ""
     for j in range(0, len(dna_seq), 3):
         gp = v_start + j
         if gp >= offset and gp + 3 <= cds_end:
-            codon = dna_seq[j:j+3]
-            amino_acid = str(Seq(codon).translate())
-            aa_str += amino_acid + "  " # AA + 2 spaces = 3 chars
+            aa_str += str(Seq(dna_seq[j:j+3]).translate()) + "  "
         else:
             aa_str += "---"
     return aa_str[:len(dna_seq)]
 
-# --- UI Setup ---
+# --- UI ---
 st.title("🧬 Yeast CRISPR Lab Designer")
 with st.sidebar:
     gene_input = st.text_input("Gene", "PHO13").strip()
@@ -71,24 +82,22 @@ if run:
         else:
             wt_aa = str(Seq(full_seq[mut_idx:mut_idx+3]).translate())
             if mutation_aa == wt_aa:
-                st.error(f"**Entry Error:** Position {residue} is already {wt_aa}.")
+                st.error(f"**Entry Error:** Position {residue} is already {wt_aa}. Please check the desired mutation.")
             else:
                 sites = find_unique_cas9_sites(full_seq, mut_idx)
                 for i, site in enumerate(sites[:5]):
                     with st.container():
+                        st.markdown('<div class="design-card">', unsafe_allow_html=True)
                         st.subheader(f"Option {i+1}: {'Forward' if site['strand']=='forward' else 'Reverse'} Strand Site")
                         
-                        # Visualization bounds
                         v_start = offset + (((max(0, min(mut_idx, site['pos']) - 12)) - offset) // 3) * 3
                         v_end = min(len(full_seq), max(mut_idx + 3, site['pos'] + 23) + 15)
                         wt_dna_seg = full_seq[v_start:v_end]
                         
-                        # Apply mutation
                         rel_mut = mut_idx - v_start
                         mut_dna_list = list(wt_dna_seg)
                         mut_dna_list[rel_mut:rel_mut+3] = list(CODON_TABLE[mutation_aa][0])
                         
-                        # Silent PAM disruption
                         pam_rel = site['pos'] - v_start
                         crit = range(pam_rel+21, pam_rel+23) if site['strand']=='forward' else range(pam_rel, pam_rel+2)
                         mut_dna_step1 = "".join(mut_dna_list)
@@ -111,29 +120,45 @@ if run:
                                                 break
                                 if is_broken: break
 
-                        # Format for display (lowercase mutations)
                         display_mut_dna = "".join([c.lower() if (idx in changed_indices and c != wt_dna_seg[idx]) else c.upper() for idx, c in enumerate(mut_dna_final)])
                         
-                        # Create aligned protein lines
+                        # --- 1. Visual HTML Table ---
+                        aa_wt_row = [str(Seq(wt_dna_seg[j:j+3]).translate()) if (v_start+j >= offset and v_start+j+3 <= cds_end) else "---" for j in range(0, len(wt_dna_seg), 3)]
+                        aa_mu_row = [str(Seq(mut_dna_final[j:j+3]).translate()) if (v_start+j >= offset and v_start+j+3 <= cds_end) else "---" for j in range(0, len(mut_dna_final), 3)]
+                        
+                        html = '<table class="align-table"><tr><td class="label-cell">WT PROTEIN</td>'
+                        for a in aa_wt_row: html += f'<td colspan="3" style="color:#777">{a}</td>'
+                        html += '</tr><tr><td class="label-cell">WT DNA</td>'
+                        f_pam = range(pam_rel+20, pam_rel+23) if site['strand']=='forward' else range(pam_rel, pam_rel+3)
+                        for idx, char in enumerate(wt_dna_seg):
+                            cls = ' class="pam-site"' if idx in f_pam else ''
+                            html += f'<td{cls}>{char}</td>'
+                        html += '</tr><tr><td class="label-cell">MUT DNA</td>'
+                        for idx, char in enumerate(display_mut_dna):
+                            cls = ' class="mut-site"' if idx in range(rel_mut, rel_mut+3) else (' class="silent-site"' if idx in changed_indices else '')
+                            html += f'<td{cls}>{char}</td>'
+                        html += '</tr><tr><td class="label-cell">MUT PROTEIN</td>'
+                        for a in aa_mu_row: html += f'<td colspan="3" style="font-weight:bold;">{a}</td>'
+                        html += '</tr></table>'
+                        st.markdown(html, unsafe_allow_html=True)
+
+                        # --- 2. Copy-Friendly Word Block ---
                         wt_prot_line = format_alignment(wt_dna_seg, v_start, offset, cds_end)
                         mu_prot_line = format_alignment(mut_dna_final, v_start, offset, cds_end)
-                        
-                        # Calculate Oligos
                         g20 = site['seq'][:-3].upper() if site['strand']=='forward' else str(Seq(site['seq'][3:]).reverse_complement()).upper()
                         ol_a, ol_b = f"GATC{g20}GTTTTAGAGCTAG", f"CTAGCTCTAAAAC{str(Seq(g20).reverse_complement()).upper()}"
                         
-                        # The "Word Block"
-                        word_output = f"OPTION {i+1} LAB REPORT DATA\n" + "="*50 + "\n"
+                        word_output = f"--- OPTION {i+1} LAB DATA ---\n"
                         word_output += f"Oligo A: {ol_a}\nOligo B: {ol_b}\n\n"
-                        word_output += f"Repair Template (Sense): {display_mut_dna}\n"
-                        word_output += f"Repair Template (Comp):  {str(Seq(mut_dna_final).complement()).upper()}\n\n"
-                        word_output += "PROOFREADING ALIGNMENT (Set font to Courier New in Word):\n"
-                        word_output += f"WT PROTEIN: {wt_prot_line}\n"
-                        word_output += f"WT DNA:     {wt_dna_seg.upper()}\n"
-                        word_output += f"MUT DNA:    {display_mut_dna}\n"
-                        word_output += f"MUT PROTEIN:{mu_prot_line}\n"
-                        
+                        word_output += f"Repair (Sense): {display_mut_dna}\n"
+                        word_output += f"Repair (Comp):  {str(Seq(mut_dna_final).complement()).upper()}\n\n"
+                        word_output += "ALIGNMENT (Set font to Courier New):\n"
+                        word_output += f"WT PROT: {wt_prot_line}\n"
+                        word_output += f"WT DNA:  {wt_dna_seg.upper()}\n"
+                        word_output += f"MUT DNA: {display_mut_dna}\n"
+                        word_output += f"MUT PROT:{mu_prot_line}\n"
                         st.code(word_output, language="text")
-                        st.markdown("---")
+                        
+                        st.markdown('</div>', unsafe_allow_html=True)
     else:
         st.error(f"Gene {gene_input} not found.")
