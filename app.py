@@ -52,31 +52,47 @@ if run:
                     r_mut = m_idx - v_s
                     m_dna_l = list(wt_dna); m_dna_l[r_mut:r_mut+3] = list(CODON_TABLE[m_aa][0])
                     p_rel = site['pos'] - v_s
-                    crit = range(p_rel+20, p_rel+23) if site['strand']=='forward' else range(p_rel, p_rel+3)
-                    m_dna_s1 = "".join(m_dna_l); is_bk = any(m_dna_s1[p] != wt_dna[p] for p in crit)
+                    # Critical PAM range
+                    crit = range(p_rel+21, p_rel+23) if site['strand']=='forward' else range(p_rel, p_rel+2)
+                    m_dna_f, c_idx = "".join(m_dna_l), list(range(r_mut, r_mut+3))
                     
-                    m_dna_f, c_idx = m_dna_s1, list(range(r_mut, r_mut+3))
+                    # Check if mutation itself already broke the PAM
+                    is_bk = any(m_dna_f[p] != wt_dna[p] for p in crit)
+                    
                     if not is_bk:
-                        for p in reversed(crit): # Try the GG first
-                            cs = (p//3)*3
-                            if 0 <= cs <= len(m_dna_s1)-3:
-                                oc = m_dna_s1[cs:cs+3]; aa_o = next((a for a, c in CODON_TABLE.items() if oc in c), None)
+                        # Scan all codons overlapping the PAM (and adjacent seed)
+                        scan_range = range(p_rel+15, p_rel+23) if site['strand']=='forward' else range(p_rel, p_rel+8)
+                        for p in reversed(scan_range):
+                            cs = (p//3)*3 # Start of codon containing this base
+                            if 0 <= cs <= len(m_dna_f)-3:
+                                oc = m_dna_f[cs:cs+3]
+                                aa_o = next((a for a, c in CODON_TABLE.items() if oc in c), None)
                                 if aa_o:
                                     for syn in CODON_TABLE[aa_o]:
-                                        if syn != oc and syn[p%3] != oc[p%3]:
-                                            tmp = list(m_dna_s1); tmp[cs:cs+3] = list(syn); 
-                                            test_seq = "".join(tmp)
-                                            # Check if PAM is actually gone
-                                            if test_seq[p_rel+21:p_rel+23] != "GG" if site['strand']=='forward' else test_seq[p_rel:p_rel+2] != "CC":
-                                                m_dna_f, is_bk = test_seq, True
-                                                c_idx.extend(range(cs, cs+3)); break
+                                        if syn != oc:
+                                            # Create test sequence with the synonymous codon
+                                            test_l = list(m_dna_f); test_l[cs:cs+3] = list(syn)
+                                            test_s = "".join(test_l)
+                                            # Did this synonymous change break the GG or CC?
+                                            if site['strand']=='forward' and test_s[p_rel+21:p_rel+23] != "GG":
+                                                m_dna_f, is_bk = test_s, True
+                                            elif site['strand']=='reverse' and test_s[p_rel:p_rel+2] != "CC":
+                                                m_dna_f, is_bk = test_s, True
+                                            
+                                            if is_bk:
+                                                c_idx.extend(range(cs, cs+3))
+                                                break
                             if is_bk: break
-                    
+
+                    if not is_bk:
+                        st.warning("⚠️ Could not find a silent mutation to break the PAM. Manual check required.")
+
                     dis_dna = "".join([c.lower() if (idx in c_idx and c != wt_dna[idx]) else c.upper() for idx, c in enumerate(m_dna_f)])
                     aa_wt = [str(Seq(wt_dna[j:j+3]).translate()) if (v_s+j>=off and v_s+j+3<=c_end) else "---" for j in range(0, len(wt_dna), 3)]
                     aa_mu = [str(Seq(m_dna_f[j:j+3]).translate()) if (v_s+j>=off and v_s+j+3<=c_end) else "---" for j in range(0, len(m_dna_f), 3)]
                     
-                    h = '<table class="align-table"><tr><td class="label-cell">WT PROT</td>'
+                    # Table & Text logic
+                    h = f'<table class="align-table"><tr><td class="label-cell">WT PROT</td>'
                     for a in aa_wt: h += f'<td colspan="3" style="color:#777">{a}</td>'
                     h += '</tr><tr><td class="label-cell">WT DNA</td>'
                     fp = range(p_rel+20, p_rel+23) if site['strand']=='forward' else range(p_rel, p_rel+3)
@@ -85,7 +101,7 @@ if run:
                     for idx, char in enumerate(dis_dna):
                         cl = ' class="mut-site"' if idx in range(r_mut, r_mut+3) else (' class="silent-site"' if idx in c_idx else '')
                         h += f'<td{cl}>{char}</td>'
-                    h += '</tr><tr><td class="label-cell">MUT PROT</td>'
+                    h += '</tr><tr><td class="label-cell">MUT PROTEIN</td>'
                     for a in aa_mu: h += f'<td colspan="3" style="font-weight:bold;">{a}</td>'
                     h += '</tr></table>'
                     st.markdown(h, unsafe_allow_html=True)
