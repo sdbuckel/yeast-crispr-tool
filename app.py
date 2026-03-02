@@ -14,9 +14,10 @@ CODON_TABLE = {
     'V': ['GTT', 'GTC', 'GTA', 'GTG'], 'W': ['TGG'], 'Y': ['TAT', 'TAC'], '*': ['TAA', 'TAG', 'TGA']
 }
 
-# --- CSS Styling for the Visual Table ---
+# --- CSS Styling ---
 st.markdown("""
     <style>
+    .instruction-box { background-color: #f0f7ff; border-left: 5px solid #007bff; padding: 15px; border-radius: 5px; margin-bottom: 25px; color: #004085; }
     .align-table { font-family: 'Courier New', monospace; border-collapse: collapse; margin: 20px 0; background-color: #ffffff; width: 100%; }
     .align-table td { padding: 5px 2px; text-align: center; width: 24px; font-size: 1.1em; border: 1px solid #eee; }
     .label-cell { text-align: right !important; width: 140px !important; color: #444; font-size: 0.9em !important; padding-right: 15px !important; border-right: 3px solid #ddd !important; font-weight: bold; background-color: #f9f9f9; }
@@ -27,7 +28,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- Helper Functions ---
+# [Helper functions: resolve_gene_name, get_gene_sequence_with_flanks, find_unique_cas9_sites, format_alignment remain same]
 def resolve_gene_name(gene):
     url = f"https://rest.ensembl.org/xrefs/symbol/saccharomyces_cerevisiae/{gene}?content-type=application/json"
     r = requests.get(url)
@@ -60,12 +61,32 @@ def format_alignment(dna_seq, v_start, offset, cds_end):
             aa_str += "---"
     return aa_str[:len(dna_seq)]
 
-# --- UI ---
+# --- UI Header ---
 st.title("🧬 Yeast CRISPR Lab Designer")
+
+st.markdown("""
+    <div class="instruction-box">
+    <strong>How to use:</strong> Enter the systematic or common yeast gene name (e.g., PHO13). 
+    Add the <strong>Amino Acid number</strong> you want to change in the <em>Residue #</em> box 
+    and add the <strong>Amino Acid</strong> you want to change it to using 
+    <strong>single-letter abbreviations</strong> (e.g., 'C' for Cysteine).
+    </div>
+    """, unsafe_allow_html=True)
+
+
+
 with st.sidebar:
-    gene_input = st.text_input("Gene", "PHO13").strip()
-    residue = st.number_input("Residue #", value=1, min_value=1)
-    mutation_aa = st.text_input("Mutation", "A").upper().strip()
+    st.header("Design Parameters")
+    gene_input = st.text_input("Gene Name", "PHO13").strip()
+    residue = st.number_input("Residue # (Position)", value=1, min_value=1)
+    mutation_aa = st.text_input("New Amino Acid (1-letter)", "A").upper().strip()
+    
+    with st.expander("Amino Acid Cheat Sheet"):
+        st.caption("A: Ala | C: Cys | D: Asp | E: Glu | F: Phe")
+        st.caption("G: Gly | H: His | I: Ile | K: Lys | L: Leu")
+        st.caption("M: Met | N: Asn | P: Pro | Q: Gln | R: Arg")
+        st.caption("S: Ser | T: Thr | V: Val | W: Trp | Y: Tyr")
+    
     run = st.button("Generate Designs", type="primary")
 
 if run:
@@ -76,15 +97,18 @@ if run:
         mut_idx = offset + (residue - 1) * 3
         
         if mut_idx + 3 > cds_end:
-            st.error(f"Residue {residue} is out of bounds.")
+            st.error(f"Residue {residue} is out of bounds for {gene_input}.")
         elif mutation_aa not in CODON_TABLE:
-            st.error(f"'{mutation_aa}' is an invalid amino acid.")
+            st.error(f"'{mutation_aa}' is not a valid 1-letter amino acid code.")
         else:
             wt_aa = str(Seq(full_seq[mut_idx:mut_idx+3]).translate())
             if mutation_aa == wt_aa:
-                st.error(f"**Entry Error:** Position {residue} is already {wt_aa}. Please check the desired mutation.")
+                st.error(f"Residue {residue} is already {wt_aa}. Please choose a different target mutation.")
             else:
                 sites = find_unique_cas9_sites(full_seq, mut_idx)
+                if not sites:
+                    st.warning("No PAM sites found nearby.")
+                
                 for i, site in enumerate(sites[:5]):
                     with st.container():
                         st.markdown('<div class="design-card">', unsafe_allow_html=True)
@@ -122,7 +146,7 @@ if run:
 
                         display_mut_dna = "".join([c.lower() if (idx in changed_indices and c != wt_dna_seg[idx]) else c.upper() for idx, c in enumerate(mut_dna_final)])
                         
-                        # --- 1. Visual HTML Table ---
+                        # Visual Table
                         aa_wt_row = [str(Seq(wt_dna_seg[j:j+3]).translate()) if (v_start+j >= offset and v_start+j+3 <= cds_end) else "---" for j in range(0, len(wt_dna_seg), 3)]
                         aa_mu_row = [str(Seq(mut_dna_final[j:j+3]).translate()) if (v_start+j >= offset and v_start+j+3 <= cds_end) else "---" for j in range(0, len(mut_dna_final), 3)]
                         
@@ -142,7 +166,7 @@ if run:
                         html += '</tr></table>'
                         st.markdown(html, unsafe_allow_html=True)
 
-                        # --- 2. Copy-Friendly Word Block ---
+                        # Word Block
                         wt_prot_line = format_alignment(wt_dna_seg, v_start, offset, cds_end)
                         mu_prot_line = format_alignment(mut_dna_final, v_start, offset, cds_end)
                         g20 = site['seq'][:-3].upper() if site['strand']=='forward' else str(Seq(site['seq'][3:]).reverse_complement()).upper()
@@ -161,4 +185,4 @@ if run:
                         
                         st.markdown('</div>', unsafe_allow_html=True)
     else:
-        st.error(f"Gene {gene_input} not found.")
+        st.error(f"Gene '{gene_input}' not found in Ensembl database.")
