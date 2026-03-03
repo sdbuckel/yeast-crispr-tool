@@ -29,13 +29,11 @@ def resolve_gene_name(gene):
     return r.json()[0]['id'] if r.status_code == 200 and r.json() else None
 
 def get_gene_seq(ensembl_id):
-    # Expanded flank to 150bp to ensure windowing works for 100bp repair templates
     url = f"https://rest.ensembl.org/sequence/id/{ensembl_id}?content-type=text/plain;expand_5prime=150;expand_3prime=150"
     r = requests.get(url)
     return r.text.strip() if r.status_code == 200 else None
 
 def find_sites(seq, m_pos):
-    # Widened search window to 100bp around mutation
     win = 100; s, e = max(0, m_pos-win), min(len(seq), m_pos+win)
     reg, res_list = seq[s:e], []
     for m in re.finditer(r'(?=([ACGT]{20}[ACGT]GG))', reg): res_list.append({'pos':s+m.start(),'seq':m.group(1),'strand':'forward'})
@@ -77,91 +75,12 @@ if run:
         else:
             sites = find_sites(f_seq, m_idx)
             if not sites:
-                st.warning(f"No PAM sites (NGG) found within 100bp of residue {res}. Try a different region.")
+                st.warning(f"No PAM sites (NGG) found within 100bp of residue {res}.")
             
             for i, site in enumerate(sites[:5]):
                 with st.container():
                     st.markdown('<div class="design-card">', unsafe_allow_html=True)
                     st.subheader(f"Option {i+1}: {site['strand'].title()} Site")
                     
-                    # 1. Coordinate calculation for display
                     half = t_len // 2
-                    v_s = off + (((max(0, m_idx - half) - off)//3)*3)
-                    v_e = v_s + t_len
-                    wt_dna = f_seq[v_s:v_e]
-                    r_mut = m_idx - v_s
-                    
-                    # 2. Apply Target Mutation
-                    m_dna_l = list(wt_dna)
-                    m_dna_l[r_mut:r_mut+3] = list(CODON_TABLE[m_aa][0])
-                    m_dna_f = "".join(m_dna_l)
-                    c_idx = list(range(r_mut, r_mut+3))
-                    
-                    # 3. Handle Silent Mutation / PAM Break
-                    p_rel = site['pos'] - v_s
-                    crit = range(p_rel+21, p_rel+23) if site['strand']=='forward' else range(p_rel, p_rel+2)
-                    is_bk = False
-                    if 0 <= min(crit) and max(crit) < len(m_dna_f):
-                        is_bk = any(m_dna_f[p] != wt_dna[p] for p in crit)
-                    
-                    if not is_bk:
-                        scan = range(p_rel+18, p_rel+23) if site['strand']=='forward' else range(p_rel, p_rel+5)
-                        for p in reversed(scan):
-                            cs = ((v_s + p - off)//3)*3 + off - v_s
-                            if 0 <= cs <= len(m_dna_f)-3:
-                                codon = m_dna_f[cs:cs+3]; amino = str(Seq(codon).translate())
-                                for syn in CODON_TABLE.get(amino, []):
-                                    if syn != codon:
-                                        test_l = list(m_dna_f); test_l[cs:cs+3] = list(syn); test_s = "".join(test_l)
-                                        p_check = test_s[p_rel+21:p_rel+23] if site['strand']=='forward' else test_s[p_rel:p_rel+2]
-                                        if p_check not in ["GG", "CC"]:
-                                            m_dna_f, is_bk = test_s, True
-                                            c_idx.extend(range(cs, cs+3)); break
-                            if is_bk: break
-
-                    # 4. Generate Cased Strands
-                    mut_indices = [idx for idx, (m, w) in enumerate(zip(m_dna_f, wt_dna)) if m != w]
-                    dis_dna_sense = "".join([c.lower() if idx in mut_indices else c.upper() for idx, c in enumerate(m_dna_f)])
-                    dis_dna_comp = "".join([c.lower() if idx in mut_indices else c.upper() for idx, c in enumerate(str(Seq(m_dna_f).complement()))])
-
-                    # 5. Build Proofreading Strings
-                    aa_wt = [str(Seq(wt_dna[j:j+3]).translate()) for j in range(0, len(wt_dna)-2, 3)]
-                    aa_mu = [str(Seq(m_dna_f[j:j+3]).translate()) for j in range(0, len(m_dna_f)-2, 3)]
-                    wt_p_str = "".join([a + "  " for a in aa_wt])
-                    mu_p_str = "".join([a + "  " for a in aa_mu])
-
-                    # 6. Render Table
-                    cut_idx = p_rel + 17 if site['strand'] == 'forward' else p_rel + 3
-                    h = '<table class="align-table"><tr><td class="label-cell">WT PROT</td>'
-                    for a in aa_wt: h += f'<td colspan="3" style="color:#777">{a}</td>'
-                    h += '</tr><tr><td class="label-cell">WT DNA</td>'
-                    fp = range(p_rel+20, p_rel+23) if site['strand']=='forward' else range(p_rel, p_rel+3)
-                    for idx, char in enumerate(wt_dna): h += f'<td{" class=pam-site" if idx in fp else ""}>{char}</td>'
-                    h += '</tr><tr><td class="label-cell">CUT SITE</td>'
-                    for idx in range(len(wt_dna)): h += f'<td>{"<span class=cut-mark>▲</span>" if idx == cut_idx else ""}</td>'
-                    h += '</tr><tr><td class="label-cell">MUT DNA</td>'
-                    for idx, char in enumerate(dis_dna_sense):
-                        cl = ' class="mut-site"' if idx in range(r_mut, r_mut+3) else (' class="silent-site"' if idx in c_idx else '')
-                        h += f'<td{cl}>{char}</td>'
-                    h += '</tr><tr><td class="label-cell">MUT PROT</td>'
-                    for a in aa_mu: h += f'<td colspan="3" style="font-weight:bold;">{a}</td>'
-                    h += '</tr></table>'
-                    st.markdown(h, unsafe_allow_html=True)
-                    st.markdown('<div class="legend-box"><b>Legend:</b> <span style="color:red">▲</span> Cut | <span style="background:#d1ffbd">Green</span> PAM | <span style="background:#ffcccc">Red</span> Mutation | <span style="background:#fff9c4">Yellow</span> Silent</div>', unsafe_allow_html=True)
-
-                    # 7. Render Oligos & Proofreading Text Block
-                    g20 = site['seq'][:-3].upper() if site['strand']=='forward' else str(Seq(site['seq'][3:]).reverse_complement()).upper()
-                    
-                    txt = f"Oligo 1: GATC{g20}GTTTTAGAGCTAG\n"
-                    txt += f"Oligo 2: CTAGCTCTAAAAC{str(Seq(g20).reverse_complement()).upper()}\n\n"
-                    txt += f"Repair (Sense): {dis_dna_sense}\n"
-                    txt += f"Repair (Comp):  {dis_dna_comp}\n\n"
-                    txt += f"--- PROOFREADING ALIGNMENT ---\n"
-                    txt += f"WT PROT:  {wt_p_str}\n"
-                    txt += f"WT DNA:   {wt_dna.upper()}\n"
-                    txt += f"MUT DNA:  {dis_dna_sense}\n"
-                    txt += f"MUT PROT: {mu_p_str}"
-                    
-                    st.code(txt, language="text")
-                    st.markdown('</div>', unsafe_allow_html=True)
-    else: st.error("Gene not found.")
+                    v_s = off + (((max(0, m_idx -
