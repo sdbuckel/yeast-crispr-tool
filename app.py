@@ -39,8 +39,27 @@ def find_sites(seq, m_pos):
     for m in re.finditer(r'(?=(CC[ACGT][ACGT]{20}))', reg): res_list.append({'pos':s+m.start(),'seq':m.group(1),'strand':'reverse'})
     return sorted(res_list, key=lambda x: abs(x['pos']-m_pos))
 
+# --- UI Header ---
 st.title("🧬 Yeast CRISPR Oligo Designer")
-st.markdown('<div class="citation-text">Laughery et al (2015) <em>Yeast</em> 32:711-720; Laughery & Wryck (2019) <em>CPMB</em> 129:e110.</div>', unsafe_allow_html=True)
+
+st.markdown("""
+<div class="citation-text">
+This tool will assist you in making single point mutations in various yeast genes. The references include:<br>
+• Laughery et al (2015) <i>Yeast</i> volume 32 pages 711-720<br>
+• Laughery and Wryck (2019) <i>Current Protocols in Molecular Biology</i> Volume 129 pages e110.
+</div>
+""", unsafe_allow_html=True)
+
+st.markdown("""
+<div class="instruction-box">
+<strong>How to use:</strong><br>
+1. Enter the systematic or common <strong>Gene Name</strong> (e.g., ADE2, PHO13).<br>
+2. Enter the <strong>Residue #</strong> (Amino Acid position) you wish to mutate.<br>
+3. Provide the 1-letter code for the <strong>New Amino Acid</strong>.<br>
+4. Adjust the <strong>Slider</strong> to set the desired repair template length (60-100bp).<br>
+5. Review the visual alignment to ensure the <strong>PAM site</strong> is successfully disrupted.
+</div>
+""", unsafe_allow_html=True)
 
 with st.sidebar:
     st.header("Parameters")
@@ -57,15 +76,15 @@ if run:
         off, c_end = 100, len(f_seq)-100
         m_idx = off + (res-1)*3
         if m_idx+3 > c_end: st.error("Residue out of bounds.")
-        elif m_aa not in CODON_TABLE: st.error("Invalid AA.")
+        elif m_aa not in CODON_TABLE: st.error("Invalid AA code.")
         else:
             sites = find_sites(f_seq, m_idx)
             for i, site in enumerate(sites[:5]):
                 with st.container():
                     st.markdown('<div class="design-card">', unsafe_allow_html=True)
-                    st.subheader(f"Option {i+1}: {site['strand'].title()}")
+                    st.subheader(f"Option {i+1}: {site['strand'].title()} Site")
                     half = t_len // 2
-                    v_s = off + (((max(0, m_idx-half)-off)//3)*3)
+                    v_s = off + (((max(0, m_idx - half) - off)//3)*3)
                     v_e = v_s + t_len
                     wt_dna = f_seq[v_s:v_e]
                     r_mut = m_idx - v_s
@@ -73,7 +92,7 @@ if run:
                     p_rel = site['pos'] - v_s
                     crit = range(p_rel+21, p_rel+23) if site['strand']=='forward' else range(p_rel, p_rel+2)
                     m_dna_f, c_idx = "".join(m_dna_l), list(range(r_mut, r_mut+3))
-                    is_bk = any(m_dna_f[p] != wt_dna[p] for p in crit) if (0 <= crit[0] < len(m_dna_f)) else True
+                    is_bk = any(m_dna_f[p] != wt_dna[p] for p in crit) if (0 <= p_rel < len(wt_dna)-23) else True
                     if not is_bk:
                         scan = range(p_rel+18, p_rel+23) if site['strand']=='forward' else range(p_rel, p_rel+5)
                         for p in reversed(scan):
@@ -87,12 +106,10 @@ if run:
                                             m_dna_f, is_bk = test_s, True
                                             c_idx.extend(range(cs, cs+3)); break
                             if is_bk: break
-
                     dis_dna = "".join([c.lower() if (idx in c_idx and c != wt_dna[idx]) else c.upper() for idx, c in enumerate(m_dna_f)])
                     aa_wt = [str(Seq(wt_dna[j:j+3]).translate()) if (v_s+j>=off and v_s+j+3<=c_end) else "---" for j in range(0, len(wt_dna), 3)]
                     aa_mu = [str(Seq(m_dna_f[j:j+3]).translate()) if (v_s+j>=off and v_s+j+3<=c_end) else "---" for j in range(0, len(m_dna_f), 3)]
                     cut_idx = p_rel + 17 if site['strand'] == 'forward' else p_rel + 3
-                    
                     h = '<table class="align-table"><tr><td class="label-cell">WT PROT</td>'
                     for a in aa_wt: h += f'<td colspan="3" style="color:#777">{a}</td>'
                     h += '</tr><tr><td class="label-cell">WT DNA</td>'
@@ -108,10 +125,8 @@ if run:
                     for a in aa_mu: h += f'<td colspan="3" style="font-weight:bold;">{a}</td>'
                     h += '</tr></table>'
                     st.markdown(h, unsafe_allow_html=True)
-                    
                     lg = '<div class="legend-box"><b>Legend:</b> <span style="color:red">▲</span> Cut | <span style="background:#d1ffbd">Green</span> PAM | <span style="background:#ffcccc">Red</span> Mutation | <span style="background:#fff9c4">Yellow</span> Silent</div>'
                     st.markdown(lg, unsafe_allow_html=True)
-
                     g20 = site['seq'][:-3].upper() if site['strand']=='forward' else str(Seq(site['seq'][3:]).reverse_complement()).upper()
                     wt_p_l = "".join([a + "  " for a in aa_wt])[:len(wt_dna)]
                     mu_p_l = "".join([a + "  " for a in aa_mu])[:len(wt_dna)]
