@@ -51,7 +51,7 @@ st.markdown("""
 2. Enter the <strong>Residue #</strong> you wish to mutate.<br>
 3. Provide the 1-letter code for the <strong>New Amino Acid</strong>.<br>
 4. Adjust the <strong>Slider</strong> for repair template length.<br>
-5. Both Oligo 1/2 and the proofreading section will generate below.
+5. The repair template will automatically center between the point mutation and the silent mutation.
 </div>
 """, unsafe_allow_html=True)
 
@@ -82,16 +82,24 @@ if run:
                     st.markdown('<div class="design-card">', unsafe_allow_html=True)
                     st.subheader(f"Option {i+1}: {site['strand'].title()} Site")
                     
-                    # Window calculation
+                    # 1. First, identify the Silent Mutation (PAM break) position
+                    pam_pos = site['pos'] + 21 if site['strand'] == 'forward' else site['pos'] + 1
+                    
+                    # 2. Calculate the center point between the point mutation (m_idx) and the PAM break
+                    center_point = (m_idx + pam_pos) // 2
+                    
+                    # 3. Build window around that center
                     half = t_len // 2
-                    raw_start = max(0, m_idx - half)
+                    raw_start = max(0, center_point - half)
+                    # Align to codon frame for clean translation
                     v_s = off + (((raw_start - off) // 3) * 3)
                     v_e = v_s + t_len
                     wt_dna = f_seq[v_s:v_e]
                     r_mut = m_idx - v_s
                     
                     m_dna_l = list(wt_dna)
-                    m_dna_l[r_mut:r_mut+3] = list(CODON_TABLE[m_aa][0])
+                    if 0 <= r_mut <= len(m_dna_l)-3:
+                        m_dna_l[r_mut:r_mut+3] = list(CODON_TABLE[m_aa][0])
                     m_dna_f = "".join(m_dna_l)
                     
                     p_rel = site['pos'] - v_s
@@ -130,25 +138,4 @@ if run:
                     h = '<table class="align-table"><tr><td class="label-cell">WT PROT</td>'
                     for a in aa_wt: h += f'<td colspan="3" style="color:#777">{a}</td>'
                     h += '</tr><tr><td class="label-cell">WT DNA</td>'
-                    fp = range(p_rel+20, p_rel+23) if site['strand']=='forward' else range(p_rel, p_rel+3)
-                    for idx, char in enumerate(wt_dna): h += f'<td{" class=pam-site" if idx in fp else ""}>{char}</td>'
-                    h += '</tr><tr><td class="label-cell">CUT SITE</td>'
-                    for idx in range(len(wt_dna)): h += f'<td>{"<span class=cut-mark>▲</span>" if idx == cut_idx else ""}</td>'
-                    h += '</tr><tr><td class="label-cell">MUT DNA</td>'
-                    for idx, char in enumerate(dis_dna_sense):
-                        cl = ' class="mut-site"' if idx in range(r_mut, r_mut+3) else (' class="silent-site"' if idx in mut_indices else '')
-                        h += f'<td{cl}>{char}</td>'
-                    h += '</tr><tr><td class="label-cell">MUT PROT</td>'
-                    for a in aa_mu: h += f'<td colspan="3" style="font-weight:bold;">{a}</td>'
-                    h += '</tr></table>'
-                    st.markdown(h, unsafe_allow_html=True)
-                    st.markdown('<div class="legend-box"><b>Legend:</b> <span style="color:red">▲</span> Cut | <span style="background:#d1ffbd">Green</span> PAM | <span style="background:#ffcccc">Red</span> Mutation | <span style="background:#fff9c4">Yellow</span> Silent</div>', unsafe_allow_html=True)
-
-                    g20 = site['seq'][:-3].upper() if site['strand']=='forward' else str(Seq(site['seq'][3:]).reverse_complement()).upper()
-                    txt = f"Oligo 1: GATC{g20}GTTTTAGAGCTAG\nOligo 2: CTAGCTCTAAAAC{str(Seq(g20).reverse_complement()).upper()}\n\n"
-                    txt += f"Repair (Sense): {dis_dna_sense}\nRepair (Comp):  {dis_dna_comp}\n\n"
-                    txt += f"--- PROOFREADING ALIGNMENT ---\nWT PROT:  {wt_p_str}\nWT DNA:   {wt_dna.upper()}\nMUT DNA:  {dis_dna_sense}\nMUT PROT: {mu_p_str}"
-                    
-                    st.code(txt, language="text")
-                    st.markdown('</div>', unsafe_allow_html=True)
-    else: st.error("Gene not found.")
+                    fp = range(p_rel+20, p_rel+23) if site['strand']=='forward' else
