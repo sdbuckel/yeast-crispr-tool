@@ -18,7 +18,7 @@ st.markdown("""
 .silent-site{background-color:#fff9c4;color:#827717;font-weight:bold;}
 .cut-mark{color:red;font-size:1.2em;font-weight:bold;}
 .design-card{border:1px solid #ddd;padding:25px;border-radius:12px;margin-bottom:40px;background-color:white;}
-.legend{font-size:0.85em;color:#444;margin-top:-15px;margin-bottom:15px;}
+.legend-box{font-size:0.85em;color:#444;margin:10px 0;padding:10px;background:#f9f9f9;border:1px solid #eee;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -40,8 +40,7 @@ def find_sites(seq, m_pos):
     return sorted(res_list, key=lambda x: abs(x['pos']-m_pos))
 
 st.title("🧬 Yeast CRISPR Oligo Designer")
-st.markdown('<div class="citation-text">This tool will assist you in making single point mutations in various yeast genes. The references include:<br>• Laughery et al (2015) <em>Yeast</em> volume 32 pages 711-720<br>• Laughery and Wryck (2019) <em>Current Protocols in Molecular Biology</em> Volume 129 pages e110.</div>', unsafe_allow_html=True)
-st.markdown('<div class="instruction-box"><strong>How to use:</strong> Enter the yeast gene name, residue number, and desired amino acid. Use the slider to set the total length of the repair template.</div>', unsafe_allow_html=True)
+st.markdown('<div class="citation-text">Laughery et al (2015) <em>Yeast</em> 32:711-720; Laughery & Wryck (2019) <em>CPMB</em> 129:e110.</div>', unsafe_allow_html=True)
 
 with st.sidebar:
     st.header("Parameters")
@@ -58,47 +57,40 @@ if run:
         off, c_end = 100, len(f_seq)-100
         m_idx = off + (res-1)*3
         if m_idx+3 > c_end: st.error("Residue out of bounds.")
-        elif m_aa not in CODON_TABLE: st.error("Invalid AA code.")
+        elif m_aa not in CODON_TABLE: st.error("Invalid AA.")
         else:
             sites = find_sites(f_seq, m_idx)
             for i, site in enumerate(sites[:5]):
                 with st.container():
                     st.markdown('<div class="design-card">', unsafe_allow_html=True)
-                    st.subheader(f"Option {i+1}: {site['strand'].title()} Site")
-                    
-                    # Calculate window based on slider
+                    st.subheader(f"Option {i+1}: {site['strand'].title()}")
                     half = t_len // 2
-                    v_s = off + (((max(0, m_idx - half) - off)//3)*3)
+                    v_s = off + (((max(0, m_idx-half)-off)//3)*3)
                     v_e = v_s + t_len
                     wt_dna = f_seq[v_s:v_e]
-                    
                     r_mut = m_idx - v_s
                     m_dna_l = list(wt_dna); m_dna_l[r_mut:r_mut+3] = list(CODON_TABLE[m_aa][0])
                     p_rel = site['pos'] - v_s
-                    
-                    # Logic to break PAM
                     crit = range(p_rel+21, p_rel+23) if site['strand']=='forward' else range(p_rel, p_rel+2)
                     m_dna_f, c_idx = "".join(m_dna_l), list(range(r_mut, r_mut+3))
                     is_bk = any(m_dna_f[p] != wt_dna[p] for p in crit) if (0 <= crit[0] < len(m_dna_f)) else True
-                    
                     if not is_bk:
-                        scan_range = range(p_rel+18, p_rel+23) if site['strand']=='forward' else range(p_rel, p_rel+5)
-                        for p in reversed(scan_range):
+                        scan = range(p_rel+18, p_rel+23) if site['strand']=='forward' else range(p_rel, p_rel+5)
+                        for p in reversed(scan):
                             cs = ((v_s + p - off)//3)*3 + off - v_s
                             if 0 <= cs <= len(m_dna_f)-3:
                                 codon = m_dna_f[cs:cs+3]; amino = str(Seq(codon).translate())
                                 for syn in CODON_TABLE.get(amino, []):
                                     if syn != codon:
                                         test_l = list(m_dna_f); test_l[cs:cs+3] = list(syn); test_s = "".join(test_l)
-                                        if site['strand']=='forward' and test_s[p_rel+21:p_rel+23] != "GG": m_dna_f, is_bk = test_s, True
-                                        elif site['strand']=='reverse' and test_s[p_rel:p_rel+2] != "CC": m_dna_f, is_bk = test_s, True
-                                        if is_bk: c_idx.extend(range(cs, cs+3)); break
+                                        if (site['strand']=='forward' and test_s[p_rel+21:p_rel+23] != "GG") or (site['strand']=='reverse' and test_s[p_rel:p_rel+2] != "CC"):
+                                            m_dna_f, is_bk = test_s, True
+                                            c_idx.extend(range(cs, cs+3)); break
                             if is_bk: break
 
                     dis_dna = "".join([c.lower() if (idx in c_idx and c != wt_dna[idx]) else c.upper() for idx, c in enumerate(m_dna_f)])
                     aa_wt = [str(Seq(wt_dna[j:j+3]).translate()) if (v_s+j>=off and v_s+j+3<=c_end) else "---" for j in range(0, len(wt_dna), 3)]
                     aa_mu = [str(Seq(m_dna_f[j:j+3]).translate()) if (v_s+j>=off and v_s+j+3<=c_end) else "---" for j in range(0, len(m_dna_f), 3)]
-                    
                     cut_idx = p_rel + 17 if site['strand'] == 'forward' else p_rel + 3
                     
                     h = '<table class="align-table"><tr><td class="label-cell">WT PROT</td>'
@@ -107,9 +99,7 @@ if run:
                     fp = range(p_rel+20, p_rel+23) if site['strand']=='forward' else range(p_rel, p_rel+3)
                     for idx, char in enumerate(wt_dna): h += f'<td{" class=pam-site" if idx in fp else ""}>{char}</td>'
                     h += '</tr><tr><td class="label-cell">CUT SITE</td>'
-                    for idx in range(len(wt_dna)):
-                        mark = '<span class="cut-mark">▲</span>' if idx == cut_idx else ''
-                        h += f'<td>{mark}</td>'
+                    for idx in range(len(wt_dna)): h += f'<td>{"<span class=cut-mark>▲</span>" if idx == cut_idx else ""}</td>'
                     h += '</tr><tr><td class="label-cell">MUT DNA</td>'
                     for idx, char in enumerate(dis_dna):
                         cl = ' class="mut-site"' if idx in range(r_mut, r_mut+3) else (' class="silent-site"' if idx in c_idx else '')
@@ -118,4 +108,16 @@ if run:
                     for a in aa_mu: h += f'<td colspan="3" style="font-weight:bold;">{a}</td>'
                     h += '</tr></table>'
                     st.markdown(h, unsafe_allow_html=True)
-                    st.markdown('<div class="legend">Legend: <span style="color:red">▲</span> = Cas9 Cut Site | <span style="background:#d1ffbd">Green</span> = PAM | <span style="background:#ffcccc">Red</span> = Target Mutation
+                    
+                    lg = '<div class="legend-box"><b>Legend:</b> <span style="color:red">▲</span> Cut | <span style="background:#d1ffbd">Green</span> PAM | <span style="background:#ffcccc">Red</span> Mutation | <span style="background:#fff9c4">Yellow</span> Silent</div>'
+                    st.markdown(lg, unsafe_allow_html=True)
+
+                    g20 = site['seq'][:-3].upper() if site['strand']=='forward' else str(Seq(site['seq'][3:]).reverse_complement()).upper()
+                    wt_p_l = "".join([a + "  " for a in aa_wt])[:len(wt_dna)]
+                    mu_p_l = "".join([a + "  " for a in aa_mu])[:len(wt_dna)]
+                    txt = f"Oligo 1: GATC{g20}GTTTTAGAGCTAG\nOligo 2: CTAGCTCTAAAAC{str(Seq(g20).reverse_complement()).upper()}\n\n"
+                    txt += f"Repair (Sense): {dis_dna}\nRepair (Comp):  {str(Seq(m_dna_f).complement()).upper()}\n\n"
+                    txt += f"WT PROT: {wt_p_l}\nWT DNA:  {wt_dna.upper()}\nMUT DNA: {dis_dna}\nMUT PROT:{mu_p_l}"
+                    st.code(txt, language="text")
+                    st.markdown('</div>', unsafe_allow_html=True)
+    else: st.error("Gene not found.")
